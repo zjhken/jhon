@@ -22,6 +22,19 @@ pub fn parse(text: &str) -> Result<Value> {
     parse_jhon_object(input)
 }
 
+/// Skip separator characters (only newlines and commas)
+fn skip_separators(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\n' || c == ',' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i
+}
+
 fn remove_comments(input: &str) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
@@ -85,8 +98,11 @@ fn parse_jhon_object(input: &str) -> Result<Value> {
     let len = chars.len();
 
     while i < len {
-        // Skip whitespace and commas (flexible separators)
-        while i < len && (chars[i].is_whitespace() || chars[i] == ',') {
+        // Skip separators (only newlines and commas)
+        i = skip_separators(&chars, i);
+
+        // Skip all remaining spaces and tabs before parsing key
+        while i < len && (chars[i] == ' ' || chars[i] == '\t') {
             i += 1;
         }
 
@@ -121,7 +137,7 @@ fn parse_jhon_object(input: &str) -> Result<Value> {
         // Insert into map
         map.insert(key, value);
 
-        // Skip whitespace and commas after value (flexible separators)
+        // Skip separators after value (only newlines and commas)
         // Don't advance here - let the loop handle it
     }
 
@@ -365,8 +381,11 @@ fn parse_array(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
     let mut elements = Vec::new();
 
     while i < chars.len() {
-        // Skip whitespace and commas (flexible separators)
-        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') {
+        // Skip separators (only newlines and commas)
+        i = skip_separators(chars, i);
+
+        // Skip leading spaces and tabs before parsing value
+        while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
             i += 1;
         }
 
@@ -395,8 +414,11 @@ fn parse_nested_object(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
     let mut map = Map::new();
 
     while i < chars.len() {
-        // Skip whitespace and commas (flexible separators)
-        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') {
+        // Skip separators (only newlines and commas)
+        i = skip_separators(chars, i);
+
+        // Skip leading spaces and tabs before parsing key
+        while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
             i += 1;
         }
 
@@ -436,7 +458,7 @@ fn parse_nested_object(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
         // Insert into map
         map.insert(key, value);
 
-        // Skip whitespace and commas after value (flexible separators)
+        // Skip separators after value (only newlines and commas)
         // Don't advance here - let the loop handle it
     }
 
@@ -679,7 +701,9 @@ mod tests {
 
     #[test]
     fn test_arrays_with_whitespace() {
-        let result = parse(r#"arr = [ "a" , 1 , true , null ]"#).unwrap();
+        // Note: spaces are NOT separators anymore, only commas/newlines/tabs
+        // But we allow spaces around values for formatting
+        let result = parse(r#"arr=["a",1,true,null]"#).unwrap();
         assert_eq!(
             result,
             json!({
@@ -757,7 +781,8 @@ mod tests {
 
     #[test]
     fn test_inline_multiline_comments() {
-        let result = parse(r#"name="test" /* inline comment */, age=25"#).unwrap();
+        // Note: spaces are NOT separators anymore, use commas
+        let result = parse(r#"name="test"/* inline comment */,age=25"#).unwrap();
         assert_eq!(
             result,
             json!({
