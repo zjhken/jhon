@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use serde_json::{Map, Number};
+use std::collections::BTreeMap;
 
 /// Parse a Jhon config string into a JSON Value
 ///
@@ -19,7 +20,131 @@ pub fn parse(text: &str) -> Result<Value> {
         return Ok(Value::Object(Map::new()));
     }
 
+    // Handle top-level objects wrapped in braces (from serialize)
+    let input = input.trim();
+    if input.starts_with('{') && input.ends_with('}') {
+        // Parse as nested object
+        let chars: Vec<char> = input.chars().collect();
+        let (value, _) = parse_nested_object(&chars, 0)?;
+        return Ok(value);
+    }
+
     parse_jhon_object(input)
+}
+
+/// Serialize a JSON Value into a compact JHON string
+///
+/// # Examples
+///
+/// ```
+/// use jhon::serialize;
+/// use serde_json::json;
+///
+/// let value = json!({"name": "John", "age": 30});
+/// let jhon_string = serialize(&value);
+/// assert_eq!(jhon_string, r#"{age=30,name="John"}"#);
+/// ```
+pub fn serialize(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            if map.is_empty() {
+                "{}".to_string()
+            } else {
+                // Always wrap objects in braces for nested use
+                format!("{{{}}}", serialize_object(map))
+            }
+        }
+        Value::Array(arr) => format!("[{}]", serialize_array(arr)),
+        Value::String(s) => serialize_string(s),
+        Value::Number(n) => serialize_number(n),
+        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+        Value::Null => "null".to_string(),
+    }
+}
+
+fn serialize_object(map: &Map<String, Value>) -> String {
+    // Sort keys for consistent serialization order
+    let sorted: BTreeMap<&String, &Value> = map.iter().collect();
+    let mut parts = Vec::new();
+    for (key, value) in sorted {
+        let serialized_key = serialize_key(key);
+        let serialized_value = serialize(value);
+        parts.push(format!("{}={}", serialized_key, serialized_value));
+    }
+    parts.join(",")
+}
+
+fn serialize_array(arr: &[Value]) -> String {
+    arr.iter().map(serialize).collect::<Vec<_>>().join(",")
+}
+
+fn serialize_key(key: &str) -> String {
+    // Check if key needs quoting (contains special characters)
+    if needs_quoting(key) {
+        serialize_string(key)
+    } else {
+        key.to_string()
+    }
+}
+
+fn needs_quoting(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    for c in s.chars() {
+        if !c.is_alphanumeric() && c != '_' && c != '-' {
+            return true;
+        }
+    }
+    false
+}
+
+fn serialize_string(s: &str) -> String {
+    let mut result = String::new();
+    result.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            '\u{08}' => result.push_str("\\b"),
+            '\u{0c}' => result.push_str("\\f"),
+            _ => {
+                // Check if we need to escape as Unicode
+                if c < ' ' {
+                    result.push_str(&format!("\\u{:04x}", c as u32));
+                } else {
+                    result.push(c);
+                }
+            }
+        }
+    }
+    result.push('"');
+    result
+}
+
+fn serialize_number(n: &Number) -> String {
+    // serde_json::Number doesn't have a simple to_string method
+    // We need to convert through f64 or use as_i64/as_u64
+    if let Some(i) = n.as_i64() {
+        i.to_string()
+    } else if let Some(u) = n.as_u64() {
+        u.to_string()
+    } else {
+        // It's a float
+        n.as_f64()
+            .map(|f| {
+                // Check if it's a whole number
+                if f.fract() == 0.0 {
+                    format!("{}", f as i64)
+                } else {
+                    format!("{}", f)
+                }
+            })
+            .unwrap_or_else(|| "0".to_string())
+    }
 }
 
 /// Skip separator characters (only newlines and commas)
@@ -1237,5 +1362,228 @@ age=25"#,
     fn test_error_unterminated_raw_string() {
         let result = parse(r#"text=r"unterminated"#);
         assert!(result.is_err());
+    }
+
+    // serialize tests
+    #[test]
+    fn test_serialize_basic_object() {
+        let value = json!({"name": "John", "age": 30});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{age=30,name="John"}"#);
+    }
+
+    #[test]
+    fn test_serialize_empty_object() {
+        let value = json!({});
+        let result = serialize(&value);
+        assert_eq!(result, "{}");
+    }
+
+    #[test]
+    fn test_serialize_string() {
+        let value = json!("hello world");
+        let result = serialize(&value);
+        assert_eq!(result, r#""hello world""#);
+    }
+
+    #[test]
+    fn test_serialize_string_with_escapes() {
+        let value = json!("line1\nline2\ttab");
+        let result = serialize(&value);
+        assert_eq!(result, r#""line1\nline2\ttab""#);
+    }
+
+    #[test]
+    fn test_serialize_string_with_quotes() {
+        let value = json!(r#"He said "hello""#);
+        let result = serialize(&value);
+        assert_eq!(result, r#""He said \"hello\"""#);
+    }
+
+    #[test]
+    fn test_serialize_numbers() {
+        let value = json!({"int": 42, "float": 3.14, "negative": -123});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{float=3.14,int=42,negative=-123}"#);
+    }
+
+    #[test]
+    fn test_serialize_boolean() {
+        let value = json!({"active": true, "inactive": false});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{active=true,inactive=false}"#);
+    }
+
+    #[test]
+    fn test_serialize_null() {
+        let value = json!({"empty": null});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{empty=null}"#);
+    }
+
+    #[test]
+    fn test_serialize_array() {
+        let value = json!([1, 2, 3, "hello", true]);
+        let result = serialize(&value);
+        assert_eq!(result, r#"[1,2,3,"hello",true]"#);
+    }
+
+    #[test]
+    fn test_serialize_empty_array() {
+        let value = json!([]);
+        let result = serialize(&value);
+        assert_eq!(result, r#"[]"#);
+    }
+
+    #[test]
+    fn test_serialize_nested_object() {
+        let value = json!({"server": {"host": "localhost", "port": 8080.0}});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{server={host="localhost",port=8080}}"#);
+    }
+
+    #[test]
+    fn test_serialize_array_with_objects() {
+        let value = json!([{"name": "John", "age": 30.0}, {"name": "Jane", "age": 25.0}]);
+        let result = serialize(&value);
+        assert_eq!(result, r#"[{age=30,name="John"},{age=25,name="Jane"}]"#);
+    }
+
+    #[test]
+    fn test_serialize_keys_with_special_chars() {
+        let value = json!({"my key": "value1", "key@symbol": "value2"});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{"key@symbol"="value2","my key"="value1"}"#);
+    }
+
+    #[test]
+    fn test_serialize_keys_with_hyphens() {
+        let value = json!({"my-key": "value", "another_key": "test"});
+        let result = serialize(&value);
+        assert_eq!(result, r#"{another_key="test",my-key="value"}"#);
+    }
+
+    #[test]
+    fn test_serialize_round_trip_simple() {
+        let original = json!({"name": "John", "age": 30.0, "active": true});
+        let serialized = serialize(&original);
+        let parsed = parse(&serialized).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_serialize_round_trip_array() {
+        // Note: parse() is designed for top-level JHON objects, not arrays
+        // So we only test that serialization produces valid syntax
+        let value = json!([1.0, 2.0, 3.0, "test", true, null]);
+        let serialized = serialize(&value);
+        assert_eq!(serialized, r#"[1,2,3,"test",true,null]"#);
+    }
+
+    #[test]
+    fn test_serialize_complex_nested_structure() {
+        // A complex real-world configuration example
+        let original = json!({
+            "app_name": "ocean-note",
+            "version": "2.0.0",
+            "database": {
+                "host": "localhost",
+                "port": 5432.0,
+                "name": "mydb",
+                "credentials": [
+                    {"user": "admin", "role": "owner"},
+                    {"user": "reader", "role": "readonly"},
+                    {"user": "writer", "role": "readwrite"}
+                ],
+                "pool_size": 10.0,
+                "timeout": 30.5,
+                "ssl_enabled": true,
+                "ssl_cert": null
+            },
+            "server": {
+                "host": "0.0.0.0",
+                "port": 3000.0,
+                "middleware": [
+                    {"name": "logger", "enabled": true, "config": {"level": "info"}},
+                    {"name": "cors", "enabled": false, "config": {}},
+                    {"name": "auth", "enabled": true, "config": {"strategy": "jwt"}}
+                ]
+            },
+            "features": [
+                {"name": "markdown", "active": true, "settings": {"preview": true}},
+                {"name": "collaboration", "active": true, "settings": {"realtime": true, "max_users": 100.0}},
+                {"name": "export", "active": false, "settings": null}
+            ],
+            "metadata": {
+                "created_at": "2024-01-15T10:30:00Z",
+                "updated_at": "2024-01-20T15:45:30Z",
+                "tags": ["production", "web", "api"],
+                "maintainers": ["team-a", "team-b"]
+            },
+            "limits": {
+                "max_file_size": 1048576.0,
+                "max_files_per_user": 100.0,
+                "storage_quota": 1073741824.0,
+                "rate_limits": {
+                    "requests_per_minute": 60.0,
+                    "burst_allowed": true
+                }
+            },
+            "debug_mode": false,
+            "log_level": "info",
+            "description": "A complex configuration with deeply nested objects, arrays of objects, mixed data types, and special characters\nin\tstrings"
+        });
+
+        let serialized = serialize(&original);
+
+        // Verify the serialization is compact (single line, minimal whitespace)
+        assert!(!serialized.contains('\n'));
+        assert!(!serialized.contains('\r'));
+        assert!(!serialized.contains('\t'));
+
+        // Verify round-trip works
+        let parsed = parse(&serialized).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_serialize_mixed_types_in_array() {
+        // Note: parse() is designed for top-level JHON objects, not arrays
+        // So we only test that serialization produces valid syntax
+        let value = json!([null, true, 42.0, "hello", 3.14, [1.0, 2.0], {"key": "value"}]);
+        let serialized = serialize(&value);
+        assert_eq!(serialized, r#"[null,true,42,"hello",3.14,[1,2],{key="value"}]"#);
+    }
+
+    #[test]
+    fn test_serialize_empty_and_nested_empty() {
+        let value = json!({
+            "empty_obj": {},
+            "empty_array": [],
+            "nested": {
+                "also_empty": {},
+                "with_array": []
+            }
+        });
+        let serialized = serialize(&value);
+        let parsed = parse(&serialized).unwrap();
+        assert_eq!(value, parsed);
+    }
+
+    #[test]
+    fn test_serialize_unicode_in_string() {
+        let value = json!({"text": "Hello©World❤️"});
+        let serialized = serialize(&value);
+        let parsed = parse(&serialized).unwrap();
+        assert_eq!(value, parsed);
+    }
+
+    #[test]
+    fn test_serialize_backslash_paths() {
+        // Test round-trip with backslash paths
+        let value = json!({"windows_path": "C:\\Users\\name\\file.txt"});
+        let serialized = serialize(&value);
+        let parsed = parse(&serialized).unwrap();
+        assert_eq!(value, parsed);
     }
 }
