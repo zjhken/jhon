@@ -1,0 +1,42 @@
+{
+  "name": "jhon-syntax-highlight",
+  "displayName": "JHON (JinHui's Object Notation) Language Support",
+  "description": "Syntax highlighting for JHON (JinHui's Object Notation) - A flexible configuration format",
+  "version": "1.0.1",
+  "publisher": "Jinhui-ZHANG",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "jhon",
+    "syntax",
+    "highlighting",
+    "configuration",
+    "json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zjhken/jhon-syntax-highlight"
+  },
+  "bugs": {
+    "url": "https://github.com/zjhken/jhon-syntax-highlight/issues"
+  },
+  "homepage": "https://github.com/zjhken/jhon-syntax-highlight#readme",
+  "contributes": {
+    "languages": [{
+      "id": "jhon",
+      "aliases": ["JHON", "jhon"],
+      "extensions": [".jhon"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "jhon",
+      "scopeName": "source.jhon",
+      "path": "./syntaxes/jhon.tmLanguage.json"
+    }]
+  }
+}

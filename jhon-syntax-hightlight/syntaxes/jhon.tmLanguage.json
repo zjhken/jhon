@@ -1,0 +1,186 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "JHON",
+	"patterns": [
+		{
+			"include": "#comments"
+		},
+		{
+			"include": "#key-value-pairs"
+		}
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash.jhon",
+					"begin": "//",
+					"end": "$"
+				},
+				{
+					"name": "comment.block.jhon",
+					"begin": "/\\*",
+					"end": "\\*/",
+					"patterns": [
+						{
+							"include": "#comments"
+						}
+					]
+				}
+			]
+		},
+		"key-value-pairs": {
+			"patterns": [
+				{
+					"begin": "\\s*([a-zA-Z_][a-zA-Z0-9_]*|\"(?:\\\\.|[^\"])*\")\\s*(=)",
+					"end": "(?=\\n|\\r|$|,|\\s*//|\\s*/\\*)",
+					"beginCaptures": {
+						"1": {
+							"patterns": [
+								{
+									"name": "entity.name.tag.unquoted.jhon",
+									"match": "[a-zA-Z_][a-zA-Z0-9_]*"
+								},
+								{
+									"name": "entity.name.tag.quoted.jhon",
+									"match": "\"(?:\\\\.|[^\"])*\""
+								}
+							]
+						},
+						"2": {
+							"name": "keyword.operator.assignment.jhon"
+						}
+					},
+					"patterns": [
+						{
+							"include": "#values"
+						}
+					]
+				}
+			]
+		},
+		"values": {
+			"patterns": [
+				{
+					"include": "#strings"
+				},
+				{
+					"include": "#numbers"
+				},
+				{
+					"include": "#booleans"
+				},
+				{
+					"include": "#null"
+				},
+				{
+					"include": "#arrays"
+				},
+				{
+					"include": "#objects"
+				}
+			]
+		},
+		"strings": {
+			"patterns": [
+				{
+					"name": "string.quoted.raw.jhon",
+					"begin": "r(#*)\"",
+					"end": "\"\\1",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.begin.jhon"
+						}
+					},
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.definition.string.end.jhon"
+						}
+					}
+				},
+				{
+					"name": "string.quoted.double.jhon",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape.jhon",
+							"match": "\\\\."
+						},
+						{
+							"name": "constant.character.escape.unicode.jhon",
+							"match": "\\\\u[0-9a-fA-F]{4}"
+						}
+					]
+				}
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{
+					"name": "constant.numeric.jhon",
+					"match": "-?\\d+(\\.\\d+)?"
+				}
+			]
+		},
+		"booleans": {
+			"patterns": [
+				{
+					"name": "constant.language.boolean.jhon",
+					"match": "\\b(true|false)\\b"
+				}
+			]
+		},
+		"null": {
+			"patterns": [
+				{
+					"name": "constant.language.null.jhon",
+					"match": "\\bnull\\b"
+				}
+			]
+		},
+		"arrays": {
+			"name": "meta.array.jhon",
+			"begin": "\\[",
+			"end": "\\]",
+			"patterns": [
+				{
+					"include": "#values"
+				},
+				{
+					"include": "#comments"
+				},
+				{
+					"name": "punctuation.separator.comma.jhon",
+					"match": ","
+				},
+				{
+					"name": "meta.separator.whitespace.jhon",
+					"match": "(?<=\\]|\\}|null|true|false|[0-9]|\"(?:\\\\.|[^\"])*\")\\s+(?=\\[\\{|null|true|false|[0-9]|\"|[a-zA-Z_])"
+				}
+			]
+		},
+		"objects": {
+			"name": "meta.object.jhon",
+			"begin": "\\{",
+			"end": "\\}",
+			"patterns": [
+				{
+					"include": "#key-value-pairs"
+				},
+				{
+					"include": "#comments"
+				}
+			]
+		},
+		"punctuation": {
+			"patterns": [
+				{
+					"name": "punctuation.separator.comma.jhon",
+					"match": ",(?=\\s*$|\\s*//|\\s*/\\*)"
+				}
+			]
+		}
+	},
+	"scopeName": "source.jhon"
+}
