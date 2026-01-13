@@ -152,7 +152,39 @@ fn parse_key(chars: &[char], mut i: usize) -> Result<(String, usize)> {
             } else if chars[i] == '\\' {
                 i += 1;
                 if i < chars.len() {
-                    key.push(chars[i]);
+                    // Process escape sequences in keys
+                    match chars[i] {
+                        'n' => key.push('\n'),
+                        'r' => key.push('\r'),
+                        't' => key.push('\t'),
+                        'b' => key.push('\u{08}'),
+                        'f' => key.push('\u{0c}'),
+                        '\\' => key.push('\\'),
+                        '"' | '\'' => key.push(chars[i]),
+                        'u' => {
+                            // Unicode escape sequence
+                            i += 1;
+                            if i + 3 >= chars.len() {
+                                return Err(anyhow!("Incomplete Unicode escape sequence"));
+                            }
+                            let unicode_str: String = chars[i..i + 4].iter().collect();
+                            if let Ok(code_point) = u16::from_str_radix(&unicode_str, 16) {
+                                if let Some(unicode_char) = char::from_u32(code_point as u32) {
+                                    key.push(unicode_char);
+                                } else {
+                                    return Err(anyhow!("Invalid Unicode code point"));
+                                }
+                            } else {
+                                return Err(anyhow!("Invalid Unicode escape sequence"));
+                            }
+                            i += 3;
+                        }
+                        _ => {
+                            // Unknown escape, treat as literal
+                            key.push('\\');
+                            key.push(chars[i]);
+                        }
+                    }
                     i += 1;
                 }
             } else {
@@ -1041,6 +1073,120 @@ age=25"#,
         // Test Unicode escape in single quoted strings
         let result = parse(r#"text='Hello\u00A9World'"#).unwrap();
         assert_eq!(result["text"], "Hello©World");
+    }
+
+    #[test]
+    fn test_quoted_keys_with_spaces() {
+        // Test double quoted keys with spaces
+        let result = parse(r#""my key"="value", "another key"="test""#).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "my key": "value",
+                "another key": "test"
+            })
+        );
+
+        // Test single quoted keys with spaces
+        let result2 = parse(r#"'my key'='value', 'another key'='test'"#).unwrap();
+        assert_eq!(
+            result2,
+            json!({
+                "my key": "value",
+                "another key": "test"
+            })
+        );
+    }
+
+    #[test]
+    fn test_quoted_keys_with_special_characters() {
+        // Test keys with various special characters
+        let result = parse(r#""key:with:special"="value1", "key@symbol"="value2""#).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "key:with:special": "value1",
+                "key@symbol": "value2"
+            })
+        );
+
+        // Test keys with dots and slashes
+        let result2 = parse(r#"'key.with.dots'='test', 'key/with/slash'='path'"#).unwrap();
+        assert_eq!(
+            result2,
+            json!({
+                "key.with.dots": "test",
+                "key/with/slash": "path"
+            })
+        );
+    }
+
+    #[test]
+    fn test_mixed_quoted_and_unquoted_keys() {
+        // Test mixing quoted and unquoted keys
+        let result = parse(r#"name='John', 'user id'=123, age=25, 'is-active'=true"#).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "name": "John",
+                "user id": 123.0,
+                "age": 25.0,
+                "is-active": true
+            })
+        );
+    }
+
+    #[test]
+    fn test_unquoted_keys_no_special_chars() {
+        // Test that unquoted keys work without special characters
+        let result = parse(r#"name="value" user_name="test" age=25"#).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "name": "value",
+                "user_name": "test",
+                "age": 25.0
+            })
+        );
+
+        // Test unquoted keys with hyphens
+        let result2 = parse(r#"my-key="value" another-key="test""#).unwrap();
+        assert_eq!(
+            result2,
+            json!({
+                "my-key": "value",
+                "another-key": "test"
+            })
+        );
+    }
+
+    #[test]
+    fn test_quoted_keys_escape_sequences() {
+        // Test escape sequences in quoted keys
+        let result = parse(r#""key\nwith\nnewlines"="value""#).unwrap();
+        assert_eq!(result.get("key\nwith\nnewlines"), Some(&json!("value")));
+
+        // Test quotes in quoted keys
+        let result2 = parse(r#"'key\'s value'="test""#).unwrap();
+        assert_eq!(result2.get("key's value"), Some(&json!("test")));
+    }
+
+    #[test]
+    fn test_complex_quoted_keys() {
+        // Test complex scenarios with quoted keys
+        let result = parse(
+            r#"
+            "user name"="John Doe",
+            email="john@example.com",
+            'home address'="123 Main St",
+            phone-number="555-1234"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(result["user name"], "John Doe");
+        assert_eq!(result["email"], "john@example.com");
+        assert_eq!(result["home address"], "123 Main St");
+        assert_eq!(result["phone-number"], "555-1234");
     }
 
     #[test]
