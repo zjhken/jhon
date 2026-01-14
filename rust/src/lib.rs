@@ -71,7 +71,7 @@ pub fn serialize(value: &Value) -> String {
 ///
 /// let value = json!({"name": "John", "age": 30});
 /// let jhon_string = serialize_pretty(&value, "  "); // 2-space indent
-/// assert_eq!(jhon_string, "age=30,\nname=\"John\"");
+/// assert_eq!(jhon_string, "age = 30,\nname = \"John\"");
 /// ```
 pub fn serialize_pretty(value: &Value, indent: &str) -> String {
     serialize_pretty_with_depth(value, indent, 0, false)
@@ -111,14 +111,14 @@ fn serialize_object_pretty(map: &Map<String, Value>, indent: &str, depth: usize,
             // Object is inside an array, keys should be indented relative to array's depth
             // depth is the array's depth, so keys should be at depth+2
             let inner_indent = get_indent_str(indent, depth + 2);
-            parts.push(format!("{}{}={}", inner_indent, serialized_key, serialized_value));
+            parts.push(format!("{}{} = {}", inner_indent, serialized_key, serialized_value));
         } else if depth == 0 {
             // Top-level object, no indentation
-            parts.push(format!("{}={}", serialized_key, serialized_value));
+            parts.push(format!("{} = {}", serialized_key, serialized_value));
         } else {
             // Nested object, use depth for indentation
             let inner_indent = get_indent_str(indent, depth);
-            parts.push(format!("{}{}={}", inner_indent, serialized_key, serialized_value));
+            parts.push(format!("{}{} = {}", inner_indent, serialized_key, serialized_value));
         }
     }
 
@@ -1724,7 +1724,7 @@ age=25"#,
     fn test_serialize_pretty_basic_object() {
         let value = json!({"name": "John", "age": 30});
         let result = serialize_pretty(&value, "  ");
-        assert_eq!(result, "age=30,\nname=\"John\"");
+        assert_eq!(result, "age = 30,\nname = \"John\"");
     }
 
     #[test]
@@ -1740,7 +1740,7 @@ age=25"#,
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
-            "server={\n  host=\"localhost\",\n  port=8080\n}"
+            "server = {\n  host = \"localhost\",\n  port = 8080\n}"
         );
     }
 
@@ -1764,7 +1764,7 @@ age=25"#,
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
-            "[\n  {\n    age=30,\n    name=\"John\"\n  },\n  {\n    age=25,\n    name=\"Jane\"\n  }\n]"
+            "[\n  {\n    age = 30,\n    name = \"John\"\n  },\n  {\n    age = 25,\n    name = \"Jane\"\n  }\n]"
         );
     }
 
@@ -1781,7 +1781,7 @@ age=25"#,
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
-            "database={\n  credentials=[\n    {\n      role=\"owner\",\n      user=\"admin\"\n    },\n    {\n      role=\"readonly\",\n      user=\"reader\"\n    }\n  ]\n}"
+            "database = {\n  credentials = [\n    {\n      role = \"owner\",\n      user = \"admin\"\n    },\n    {\n      role = \"readonly\",\n      user = \"reader\"\n    }\n  ]\n}"
         );
     }
 
@@ -1789,14 +1789,14 @@ age=25"#,
     fn test_serialize_pretty_tabs() {
         let value = json!({"name": "John", "age": 30});
         let result = serialize_pretty(&value, "\t");
-        assert_eq!(result, "age=30,\nname=\"John\"");
+        assert_eq!(result, "age = 30,\nname = \"John\"");
     }
 
     #[test]
     fn test_serialize_pretty_four_spaces() {
         let value = json!({"name": "John", "age": 30});
         let result = serialize_pretty(&value, "    ");
-        assert_eq!(result, "age=30,\nname=\"John\"");
+        assert_eq!(result, "age = 30,\nname = \"John\"");
     }
 
     #[test]
@@ -1812,7 +1812,7 @@ age=25"#,
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
-            "array=[\n  1,\n  2,\n  3\n],\nboolean=true,\nnested={\n  key=\"value\"\n},\nnull_value=null,\nnumber=42,\nstring=\"hello\""
+            "array = [\n  1,\n  2,\n  3\n],\nboolean = true,\nnested = {\n  key = \"value\"\n},\nnull_value = null,\nnumber = 42,\nstring = \"hello\""
         );
     }
 
@@ -1835,7 +1835,7 @@ age=25"#,
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
-            "\"key@symbol\"=\"value2\",\n\"my key\"=\"value1\""
+            "\"key@symbol\" = \"value2\",\n\"my key\" = \"value1\""
         );
     }
 
@@ -1844,7 +1844,7 @@ age=25"#,
         let value = json!({"name": "John", "age": 30});
         let result = serialize_pretty(&value, "");
         // With empty indent, still adds newlines but no indentation
-        assert_eq!(result, "age=30,\nname=\"John\"");
+        assert_eq!(result, "age = 30,\nname = \"John\"");
     }
 
     #[test]
@@ -1863,7 +1863,7 @@ age=25"#,
         });
         let result = serialize_pretty(&value, "  ");
         // Verify structure is properly formatted with full string assertion
-        let expected = "app={\n  features=[\n    \"auth\",\n    \"logging\",\n    \"api\"\n  ],\n  name=\"test-app\",\n  settings={\n    debug=true,\n    hosts=[\n      \"localhost\",\n      \"0.0.0.0\"\n    ],\n    port=3000\n  },\n  version=\"1.0.0\"\n}";
+        let expected = "app = {\n  features = [\n    \"auth\",\n    \"logging\",\n    \"api\"\n  ],\n  name = \"test-app\",\n  settings = {\n    debug = true,\n    hosts = [\n      \"localhost\",\n      \"0.0.0.0\"\n    ],\n    port = 3000\n  },\n  version = \"1.0.0\"\n}";
         assert_eq!(result, expected);
 
         // Verify round-trip works
