@@ -138,7 +138,7 @@
 			"patterns": [
 				{
 					"name": "constant.numeric.jhon",
-					"match": "-?\\d+(\\.\\d+)?"
+					"match": "-?\\d(?:\\d|_)*(?:\\.\\d(?:\\d|_)*)?"
 				}
 			]
 		},

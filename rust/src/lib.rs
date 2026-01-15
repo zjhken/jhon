@@ -732,10 +732,12 @@ fn parse_number(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
         i += 1;
     }
 
-    // Digits before decimal point
+    // Digits before decimal point (underscores allowed as digit separators)
     let mut has_digits = false;
-    while i < chars.len() && chars[i].is_ascii_digit() {
-        has_digits = true;
+    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+        if chars[i].is_ascii_digit() {
+            has_digits = true;
+        }
         i += 1;
     }
 
@@ -747,8 +749,10 @@ fn parse_number(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
     if i < chars.len() && chars[i] == '.' {
         i += 1;
         let mut has_decimal_digits = false;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            has_decimal_digits = true;
+        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+            if chars[i].is_ascii_digit() {
+                has_decimal_digits = true;
+            }
             i += 1;
         }
         if !has_decimal_digits {
@@ -756,7 +760,8 @@ fn parse_number(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
         }
     }
 
-    let num_str: String = chars[start..i].iter().collect();
+    // Build number string without underscores
+    let num_str: String = chars[start..i].iter().filter(|&&c| c != '_').collect();
     match num_str.parse::<f64>() {
         Ok(num) => {
             if let Some(number) = Number::from_f64(num) {
@@ -897,6 +902,24 @@ mod tests {
                 "float": 3.14,
                 "negative": -123.0,
                 "negative_float": -45.67
+            })
+        );
+    }
+
+    #[test]
+    fn test_numbers_with_underscores() {
+        let result = parse(
+            r#"large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000, mixed=1_000_000.000_001"#,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "large": 100_000.0,
+                "million": 1_000_000.0,
+                "decimal": 1_234.567_890,
+                "neg_large": -50_000.0,
+                "mixed": 1_000_000.000_001
             })
         );
     }

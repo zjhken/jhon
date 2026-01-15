@@ -364,10 +364,12 @@ class Parser {
         if (this.pos < this.length && this.chars[this.pos] === '-') {
             this.pos++;
         }
-        // Digits before decimal point
+        // Digits before decimal point (underscores allowed as digit separators)
         let hasDigits = false;
-        while (this.pos < this.length && /[0-9]/.test(this.chars[this.pos])) {
-            hasDigits = true;
+        while (this.pos < this.length && (/[0-9]/.test(this.chars[this.pos]) || this.chars[this.pos] === '_')) {
+            if (this.chars[this.pos] !== '_') {
+                hasDigits = true;
+            }
             this.pos++;
         }
         if (!hasDigits) {
@@ -377,15 +379,18 @@ class Parser {
         if (this.pos < this.length && this.chars[this.pos] === '.') {
             this.pos++;
             let hasDecimalDigits = false;
-            while (this.pos < this.length && /[0-9]/.test(this.chars[this.pos])) {
-                hasDecimalDigits = true;
+            while (this.pos < this.length && (/[0-9]/.test(this.chars[this.pos]) || this.chars[this.pos] === '_')) {
+                if (this.chars[this.pos] !== '_') {
+                    hasDecimalDigits = true;
+                }
                 this.pos++;
             }
             if (!hasDecimalDigits) {
                 throw new JhonParseError('Invalid decimal number', this.pos);
             }
         }
-        const numStr = this.chars.slice(start, this.pos).join('');
+        // Build number string without underscores
+        const numStr = this.chars.slice(start, this.pos).filter(c => c !== '_').join('');
         const num = parseFloat(numStr);
         if (isNaN(num)) {
             throw new JhonParseError('Could not parse number', this.pos);

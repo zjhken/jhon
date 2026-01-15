@@ -72,6 +72,19 @@ describe('parse', () => {
     });
   });
 
+  test('numbers with underscores', () => {
+    const result = parse(
+      'large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000, mixed=1_000_000.000_001'
+    );
+    expect(result).toEqual({
+      large: 100_000,
+      million: 1_000_000,
+      decimal: 1_234.567_89,
+      neg_large: -50_000,
+      mixed: 1_000_000.000_001,
+    });
+  });
+
   test('booleans', () => {
     const result = parse('truth=true, falsehood=false');
     expect(result).toEqual({

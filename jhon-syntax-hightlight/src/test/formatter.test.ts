@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { JhonFormatter } from '../jhonFormatter';
+import { JhonParser } from '../parser';
 import type { JhonObject, JhonArray } from '../parser';
 
 function createFormatter(options: Partial<{insertSpaces: boolean, tabSize: number, sortKeys: boolean, trailingCommas: boolean, alignEquals: boolean, quoteStyle: 'double' | 'single' | 'auto'}> = {}) {
@@ -91,6 +92,20 @@ describe('JhonFormatter', () => {
 			};
 			const result = formatter.format(input);
 			expect(result).toBe('float = 3.14,\ninteger = 42,\nnegative = -123\n');
+		});
+
+		it('should format numbers parsed from input with underscores', () => {
+			const parser = new JhonParser();
+			const formatter = createFormatter();
+
+			// Input with underscores in numbers
+			const input = 'large=100_000, decimal=1_234.567_890';
+			const parseResult = parser.parse(input);
+
+			expect(parseResult.success).toBe(true);
+			const formatted = formatter.format(parseResult.value!);
+			// Output should not have underscores
+			expect(formatted).toBe('decimal = 1234.56789,\nlarge = 100000\n');
 		});
 
 		it('should format boolean values', () => {
