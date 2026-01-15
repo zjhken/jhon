@@ -9,12 +9,15 @@ JHON is a JSON-like configuration format with flexible syntax and enhanced reada
 ## Features
 
 - ✅ Full syntax highlighting for JHON files
+- ✅ **Automatic formatting** with customizable options
 - ✅ Support for single-line (`//`) and multi-line (`/* */`) comments
 - ✅ Flexible separators (spaces, tabs, newlines, commas)
 - ✅ Support for nested objects and arrays
-- ✅ String literals (including raw strings with `r"..."` syntax)
+- ✅ String literals (including raw strings with `r"..."` and `R"..."` syntax)
 - ✅ All JSON data types: strings, numbers, booleans, null
 - ✅ Escape sequences and Unicode support
+- ✅ Single and double-quoted strings
+- ✅ Keys with hyphens (e.g., `my-key=value`)
 
 ## JHON Syntax Example
 
@@ -91,6 +94,88 @@ Search for "JHON Language Support" in the VSCode extensions panel.
 ## Usage
 
 Create a file with the `.jhon` extension and start writing JHON configuration. The extension will automatically provide syntax highlighting.
+
+## Formatter
+
+The extension includes a powerful formatter with the following features:
+
+### Formatting Features
+
+- **Full document formatting**: Format the entire document with `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac)
+- **Range formatting**: Format selected text only
+- **Format on save**: Automatically format when saving the file (can be enabled in VSCode settings)
+
+### Configuration Options
+
+You can customize the formatter behavior in your VSCode settings (`settings.json`):
+
+```json
+{
+  // Enable/disable formatter (default: true)
+  "jhon.format.enable": true,
+
+  // Use spaces for indentation (default: true)
+  "jhon.format.insertSpaces": true,
+
+  // Number of spaces for indentation (default: 2)
+  "jhon.format.tabSize": 2,
+
+  // Sort object keys alphabetically (default: true)
+  "jhon.format.sortKeys": true,
+
+  // Add trailing commas to objects and arrays (default: false)
+  "jhon.format.trailingCommas": false,
+
+  // Align equals signs in objects (default: false)
+  "jhon.format.alignEquals": false,
+
+  // Quote style: "double", "single", or "auto" (default: "auto")
+  "jhon.format.quoteStyle": "auto"
+}
+```
+
+### Formatter Examples
+
+**Before formatting:**
+```jhon
+database={host="localhost" port=5432 name="mydb"}
+features=["markdown","collaboration","real-time"]
+app_name="ocean-note" version="1.0.0" debug=true
+```
+
+**After formatting (with default settings):**
+```jhon
+app_name = "ocean-note",
+database = {
+  host = "localhost",
+  name = "mydb",
+  port = 5432
+},
+debug = true,
+features = [
+  "markdown",
+  "collaboration",
+  "real-time"
+],
+version = "1.0.0"
+```
+
+**After formatting (with `alignEquals: true`):**
+```jhon
+app_name  = "ocean-note",
+database  = {
+  host     = "localhost",
+  name     = "mydb",
+  port     = 5432
+},
+debug     = true,
+features  = [
+  "markdown",
+  "collaboration",
+  "real-time"
+],
+version   = "1.0.0"
+```
 
 ## File Association
 

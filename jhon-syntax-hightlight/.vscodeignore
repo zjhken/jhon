@@ -7,3 +7,8 @@ dev-files/**
 .git/**
 .DS_Store
 .claude
+src/**/test/**/*.ts
+tsconfig.json
+**/*.ts
+**/*.map
+node_modules/**

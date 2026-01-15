@@ -1,7 +1,7 @@
 {
   "name": "jhon-syntax-highlight",
   "displayName": "JHON (JinHui's Object Notation) Language Support",
-  "description": "Syntax highlighting for JHON (JinHui's Object Notation) - A flexible configuration format",
+  "description": "Syntax highlighting and formatting for JHON (JinHui's Object Notation) - A flexible configuration format",
   "version": "1.0.1",
   "publisher": "Jinhui-ZHANG",
   "icon": "icon.png",
@@ -9,23 +9,22 @@
     "vscode": "^1.107.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Formatters"
   ],
   "keywords": [
     "jhon",
     "syntax",
     "highlighting",
     "configuration",
-    "json"
+    "json",
+    "formatter",
+    "format"
   ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/zjhken/jhon-syntax-highlight"
-  },
-  "bugs": {
-    "url": "https://github.com/zjhken/jhon-syntax-highlight/issues"
-  },
-  "homepage": "https://github.com/zjhken/jhon-syntax-highlight#readme",
+  "activationEvents": [
+    "onLanguage:jhon"
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [{
       "id": "jhon",
@@ -37,6 +36,63 @@
       "language": "jhon",
       "scopeName": "source.jhon",
       "path": "./syntaxes/jhon.tmLanguage.json"
-    }]
+    }],
+    "configuration": {
+      "title": "JHON",
+      "properties": {
+        "jhon.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable default JHON formatter"
+        },
+        "jhon.format.insertSpaces": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use spaces for indentation (vs. tabs)"
+        },
+        "jhon.format.tabSize": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Number of spaces or size of tab for indentation"
+        },
+        "jhon.format.sortKeys": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sort object keys alphabetically"
+        },
+        "jhon.format.trailingCommas": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add trailing commas to objects and arrays"
+        },
+        "jhon.format.alignEquals": {
+          "type": "boolean",
+          "default": false,
+          "description": "Align equals signs in objects"
+        },
+        "jhon.format.quoteStyle": {
+          "type": "string",
+          "enum": ["double", "single", "auto"],
+          "default": "auto",
+          "description": "Quote style for strings",
+          "enumDescriptions": ["Always use double quotes", "Always use single quotes", "Preserve existing quotes"]
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.107.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
   }
 }

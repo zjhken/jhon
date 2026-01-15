@@ -1,0 +1,46 @@
+{
+  "name": "jhon",
+  "version": "1.0.0",
+  "description": "JHON - JSON-like Human Optimized Notation config language parser and serializer",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "dev": "bun --watch src/index.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "config",
+    "parser",
+    "serializer",
+    "jhon",
+    "json",
+    "configuration",
+    "toml",
+    "yaml"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "@types/node": "^20.11.5",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  }
+}

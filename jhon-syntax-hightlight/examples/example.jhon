@@ -1,0 +1,30 @@
+// Example JHON Configuration File
+app_name="ocean-note" version="1.0.0" debug=true
+
+// Database Configuration
+database={host="localhost" port=5432 name="mydb"}
+
+// Feature Flags
+features=["markdown","collaboration","real-time"]
+
+// Numeric Settings
+max_file_size=1048576 timeout=30.5
+
+// Nested Objects
+server={host="0.0.0.0" port=3000 middleware=[{name="logger" enabled=true},{name="cors" enabled=false}]}
+
+// Complex Nested Structure
+metadata={created_at="2024-01-15T10:30:00Z" tags=["production","web"] maintainers=["team-a","team-b"]}
+
+// Keys with Hyphens
+log-level="info" cache-ttl=3600
+
+// Single and Double Quotes
+double_quoted="hello world"
+single_quoted='another value'
+
+// Raw String
+windows_path=r"C:\Windows\System32"
+
+// Null Value
+optional_config=null
