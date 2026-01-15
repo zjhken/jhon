@@ -1,12 +1,15 @@
 package jhon;
 
+import com.google.gson.*;
 import java.util.*;
 
 /**
- * Simple benchmark runner for JHON parser comparing with JSON
+ * Simple benchmark runner for JHON parser comparing with Gson (JSON)
  * (No JMH dependency for simpler execution)
  */
 public class SimpleBenchmark {
+
+    private static final Gson GSON = new Gson();
 
     // Test data
     private static final String SMALL_JHON = "name=\"test\" age=25 active=true";
@@ -27,7 +30,7 @@ public class SimpleBenchmark {
 
     public static void main(String[] args) throws Exception {
         System.out.println("=".repeat(80));
-        System.out.println("JHON Parser Benchmarks (Java)");
+        System.out.println("JHON Parser Benchmarks (Java) - JHON vs Gson (JSON)");
         System.out.println("=".repeat(80));
 
         List<Result> results = new ArrayList<>();
@@ -36,33 +39,38 @@ public class SimpleBenchmark {
         System.out.println("\nWarming up...");
         for (int i = 0; i < 10000; i++) {
             Jhon.parse(SMALL_JHON);
-            parseSimpleJSON(SMALL_JSON);
+            GSON.fromJson(SMALL_JSON, Object.class);
         }
 
         // Parse benchmarks - Small
         System.out.println("\n--- Parse Benchmarks (Small) ---");
         results.add(new Result("Parse JHON (Small)", benchmarkParseJHONSmall()));
-        results.add(new Result("Parse JSON (Small)", benchmarkParseJSONSmall()));
+        results.add(new Result("Parse Gson/JSON (Small)", benchmarkParseJSONSmall()));
 
         // Parse benchmarks - Medium
         System.out.println("\n--- Parse Benchmarks (Medium) ---");
         results.add(new Result("Parse JHON (Medium)", benchmarkParseJHONMedium()));
-        results.add(new Result("Parse JSON (Medium)", benchmarkParseJSONMedium()));
+        results.add(new Result("Parse Gson/JSON (Medium)", benchmarkParseJSONMedium()));
 
         // Serialize benchmarks - Small
         System.out.println("\n--- Serialize Benchmarks (Small) ---");
         results.add(new Result("Serialize JHON (Small)", benchmarkSerializeJHONSmall()));
-        results.add(new Result("Serialize JSON (Small)", benchmarkSerializeJSONSmall()));
+        results.add(new Result("Serialize Gson/JSON (Small)", benchmarkSerializeJSONSmall()));
 
         // Serialize benchmarks - Medium
         System.out.println("\n--- Serialize Benchmarks (Medium) ---");
         results.add(new Result("Serialize JHON (Medium)", benchmarkSerializeJHONMedium()));
-        results.add(new Result("Serialize JSON (Medium)", benchmarkSerializeJSONMedium()));
+        results.add(new Result("Serialize Gson/JSON (Medium)", benchmarkSerializeJSONMedium()));
 
         // Round-trip benchmarks
         System.out.println("\n--- Round-Trip Benchmarks (Small) ---");
         results.add(new Result("Round-trip JHON (Small)", benchmarkRoundTripJHONSmall()));
-        results.add(new Result("Round-trip JSON (Small)", benchmarkRoundTripJSONSmall()));
+        results.add(new Result("Round-trip Gson/JSON (Small)", benchmarkRoundTripJSONSmall()));
+
+        // Round-trip benchmarks - Medium
+        System.out.println("\n--- Round-Trip Benchmarks (Medium) ---");
+        results.add(new Result("Round-trip JHON (Medium)", benchmarkRoundTripJHONMedium()));
+        results.add(new Result("Round-trip Gson/JSON (Medium)", benchmarkRoundTripJSONMedium()));
 
         // Specialized benchmarks
         System.out.println("\n--- Specialized Benchmarks ---");
@@ -96,6 +104,53 @@ public class SimpleBenchmark {
         System.out.println("JSON size:  " + MEDIUM_JSON.trim().length() + " bytes");
         System.out.printf("JHON is %.1f%% of JSON size%n",
                 jhonSerialized.length() * 100.0 / MEDIUM_JSON.trim().length());
+
+        // Comparison summary
+        System.out.println("\n" + "=".repeat(80));
+        System.out.println("Performance Summary (JHON vs Gson)");
+        System.out.println("=".repeat(80));
+
+        long jhonParseSmall = results.get(0).timeNs;
+        long gsonParseSmall = results.get(1).timeNs;
+        long jhonParseMedium = results.get(2).timeNs;
+        long gsonParseMedium = results.get(3).timeNs;
+
+        if (jhonParseSmall < gsonParseSmall) {
+            System.out.printf("Parse Small:  JHON is %.2fx faster than Gson%n",
+                    (double) gsonParseSmall / jhonParseSmall);
+        } else {
+            System.out.printf("Parse Small:  Gson is %.2fx faster than JHON%n",
+                    (double) jhonParseSmall / gsonParseSmall);
+        }
+
+        if (jhonParseMedium < gsonParseMedium) {
+            System.out.printf("Parse Medium: JHON is %.2fx faster than Gson%n",
+                    (double) gsonParseMedium / jhonParseMedium);
+        } else {
+            System.out.printf("Parse Medium: Gson is %.2fx faster than JHON%n",
+                    (double) jhonParseMedium / gsonParseMedium);
+        }
+
+        long jhonSerializeSmall = results.get(4).timeNs;
+        long gsonSerializeSmall = results.get(5).timeNs;
+        long jhonSerializeMedium = results.get(6).timeNs;
+        long gsonSerializeMedium = results.get(7).timeNs;
+
+        if (gsonSerializeSmall < jhonSerializeSmall) {
+            System.out.printf("Serialize Small:  Gson is %.2fx faster than JHON%n",
+                    (double) jhonSerializeSmall / gsonSerializeSmall);
+        } else {
+            System.out.printf("Serialize Small:  JHON is %.2fx faster than Gson%n",
+                    (double) gsonSerializeSmall / jhonSerializeSmall);
+        }
+
+        if (gsonSerializeMedium < jhonSerializeMedium) {
+            System.out.printf("Serialize Medium: Gson is %.2fx faster than JHON%n",
+                    (double) jhonSerializeMedium / gsonSerializeMedium);
+        } else {
+            System.out.printf("Serialize Medium: JHON is %.2fx faster than Gson%n",
+                    (double) gsonSerializeMedium / jhonSerializeMedium);
+        }
     }
 
     static class Result {
@@ -122,7 +177,7 @@ public class SimpleBenchmark {
         int iterations = 10000;
         long start = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            parseSimpleJSON(SMALL_JSON);
+            GSON.fromJson(SMALL_JSON, Object.class);
         }
         return (System.nanoTime() - start) / iterations;
     }
@@ -140,7 +195,7 @@ public class SimpleBenchmark {
         int iterations = 5000;
         long start = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            parseSimpleJSON(MEDIUM_JSON);
+            GSON.fromJson(MEDIUM_JSON, Object.class);
         }
         return (System.nanoTime() - start) / iterations;
     }
@@ -166,7 +221,7 @@ public class SimpleBenchmark {
         int iterations = 10000;
         long start = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            toJSONString(value);
+            GSON.toJson(value);
         }
         return (System.nanoTime() - start) / iterations;
     }
@@ -182,11 +237,11 @@ public class SimpleBenchmark {
     }
 
     static long benchmarkSerializeJSONMedium() {
-        Object parsed = parseSimpleJSON(MEDIUM_JSON);
+        Object parsed = GSON.fromJson(MEDIUM_JSON, Object.class);
         int iterations = 5000;
         long start = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            toJSONString(parsed);
+            GSON.toJson(parsed);
         }
         return (System.nanoTime() - start) / iterations;
     }
@@ -213,8 +268,30 @@ public class SimpleBenchmark {
         int iterations = 5000;
         long start = System.nanoTime();
         for (int i = 0; i < iterations; i++) {
-            String serialized = toJSONString(original);
-            parseSimpleJSON(serialized);
+            String serialized = GSON.toJson(original);
+            GSON.fromJson(serialized, Object.class);
+        }
+        return (System.nanoTime() - start) / iterations;
+    }
+
+    static long benchmarkRoundTripJHONMedium() throws Exception {
+        Object parsed = Jhon.parse(MEDIUM_JHON);
+        String serialized = Jhon.serialize(parsed);
+        int iterations = 2000;
+        long start = System.nanoTime();
+        for (int i = 0; i < iterations; i++) {
+            Jhon.parse(serialized);
+        }
+        return (System.nanoTime() - start) / iterations;
+    }
+
+    static long benchmarkRoundTripJSONMedium() {
+        Object parsed = GSON.fromJson(MEDIUM_JSON, Object.class);
+        String serialized = GSON.toJson(parsed);
+        int iterations = 2000;
+        long start = System.nanoTime();
+        for (int i = 0; i < iterations; i++) {
+            GSON.fromJson(serialized, Object.class);
         }
         return (System.nanoTime() - start) / iterations;
     }
@@ -274,197 +351,5 @@ public class SimpleBenchmark {
             Jhon.parse(input);
         }
         return (System.nanoTime() - start) / iterations;
-    }
-
-    // Simple JSON parser for comparison
-    private static Object parseSimpleJSON(String json) {
-        json = json.trim();
-        if (json.startsWith("{")) {
-            return parseJSONObject(json);
-        } else if (json.startsWith("[")) {
-            return parseJSONArray(json);
-        } else if (json.startsWith("\"")) {
-            return parseJSONString(json);
-        } else if (json.equals("true")) {
-            return true;
-        } else if (json.equals("false")) {
-            return false;
-        } else if (json.equals("null")) {
-            return null;
-        } else {
-            return parseJSONNumber(json);
-        }
-    }
-
-    private static Map<String, Object> parseJSONObject(String json) {
-        Map<String, Object> map = new LinkedHashMap<>();
-        json = json.substring(1, json.length() - 1).trim();
-        if (json.isEmpty()) return map;
-
-        int depth = 0;
-        int start = 0;
-        boolean inString = false;
-
-        for (int i = 0; i < json.length(); i++) {
-            char c = json.charAt(i);
-            if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
-                inString = !inString;
-            } else if (!inString) {
-                if (c == '{' || c == '[') depth++;
-                else if (c == '}' || c == ']') depth--;
-                else if (c == ',' && depth == 0) {
-                    parseJSONPair(json.substring(start, i), map);
-                    start = i + 1;
-                }
-            }
-        }
-        if (start < json.length()) {
-            parseJSONPair(json.substring(start), map);
-        }
-        return map;
-    }
-
-    private static void parseJSONPair(String pair, Map<String, Object> map) {
-        int colonIdx = findColonNotInString(pair);
-        if (colonIdx < 0) return;
-
-        String key = pair.substring(0, colonIdx).trim();
-        String value = pair.substring(colonIdx + 1).trim();
-
-        key = parseJSONString(key).toString();
-        map.put(key, parseSimpleJSON(value));
-    }
-
-    private static int findColonNotInString(String s) {
-        boolean inString = false;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '"' && (i == 0 || s.charAt(i - 1) != '\\')) {
-                inString = !inString;
-            } else if (c == ':' && !inString) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private static List<Object> parseJSONArray(String json) {
-        List<Object> list = new ArrayList<>();
-        json = json.substring(1, json.length() - 1).trim();
-        if (json.isEmpty()) return list;
-
-        int depth = 0;
-        int start = 0;
-        boolean inString = false;
-
-        for (int i = 0; i < json.length(); i++) {
-            char c = json.charAt(i);
-            if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
-                inString = !inString;
-            } else if (!inString) {
-                if (c == '{' || c == '[') depth++;
-                else if (c == '}' || c == ']') depth--;
-                else if (c == ',' && depth == 0) {
-                    list.add(parseSimpleJSON(json.substring(start, i).trim()));
-                    start = i + 1;
-                }
-            }
-        }
-        if (start < json.length()) {
-            list.add(parseSimpleJSON(json.substring(start).trim()));
-        }
-        return list;
-    }
-
-    private static String parseJSONString(String s) {
-        if (s.startsWith("\"") && s.endsWith("\"")) {
-            s = s.substring(1, s.length() - 1);
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < s.length(); i++) {
-                char c = s.charAt(i);
-                if (c == '\\' && i + 1 < s.length()) {
-                    char next = s.charAt(i + 1);
-                    switch (next) {
-                        case 'n' -> sb.append('\n');
-                        case 'r' -> sb.append('\r');
-                        case 't' -> sb.append('\t');
-                        case 'b' -> sb.append('\b');
-                        case 'f' -> sb.append('\f');
-                        case '"' -> sb.append('"');
-                        case '\\' -> sb.append('\\');
-                        case 'u' -> {
-                            if (i + 5 <= s.length()) {
-                                String hex = s.substring(i + 2, i + 6);
-                                sb.append((char) Integer.parseInt(hex, 16));
-                                i += 5;
-                            }
-                        }
-                        default -> sb.append(next);
-                    }
-                    i++;
-                } else {
-                    sb.append(c);
-                }
-            }
-            return sb.toString();
-        }
-        return s;
-    }
-
-    private static Number parseJSONNumber(String s) {
-        try {
-            if (s.contains(".") || s.contains("e") || s.contains("E")) {
-                return Double.parseDouble(s);
-            }
-            long value = Long.parseLong(s);
-            if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE) {
-                return (int) value;
-            }
-            return value;
-        } catch (NumberFormatException e) {
-            return Double.parseDouble(s);
-        }
-    }
-
-    private static String toJSONString(Object obj) {
-        if (obj == null) return "null";
-        if (obj instanceof String) return "\"" + escapeJSONString((String) obj) + "\"";
-        if (obj instanceof Number) return obj.toString();
-        if (obj instanceof Boolean) return obj.toString();
-
-        if (obj instanceof Map) {
-            StringBuilder sb = new StringBuilder("{");
-            Map<?, ?> map = (Map<?, ?>) obj;
-            boolean first = true;
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                if (!first) sb.append(",");
-                sb.append("\"").append(escapeJSONString(entry.getKey().toString())).append("\":");
-                sb.append(toJSONString(entry.getValue()));
-                first = false;
-            }
-            sb.append("}");
-            return sb.toString();
-        }
-
-        if (obj instanceof List) {
-            StringBuilder sb = new StringBuilder("[");
-            List<?> list = (List<?>) obj;
-            for (int i = 0; i < list.size(); i++) {
-                if (i > 0) sb.append(",");
-                sb.append(toJSONString(list.get(i)));
-            }
-            sb.append("]");
-            return sb.toString();
-        }
-
-        return "\"" + obj.toString() + "\"";
-    }
-
-    private static String escapeJSONString(String s) {
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
     }
 }
