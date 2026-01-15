@@ -60,37 +60,40 @@ export class JhonParseError extends Error {
 // Parser Implementation
 // ============================================================================
 
+// Pre-compile regex patterns for better performance
+const REGEX_WHITESPACE = /\s/;
+const REGEX_UNQUOTED_KEY = /[a-zA-Z0-9_-]/;
+const REGEX_DIGIT = /[0-9]/;
+
 class Parser {
   private input: string;
   private pos: number;
-  private chars: string[];
   private length: number;
 
   constructor(input: string) {
     this.input = input;
     this.pos = 0;
-    this.chars = Array.from(input);
-    this.length = this.chars.length;
+    this.length = input.length;
   }
 
   /**
    * Remove comments (// and slash-star star-slash)
    */
   public static removeComments(input: string): string {
-    let result = '';
+    const result: string[] = [];
     let i = 0;
-    const chars = Array.from(input);
+    const len = input.length;
 
-    while (i < chars.length) {
-      const c = chars[i];
+    while (i < len) {
+      const c = input[i];
 
-      if (c === '/' && i + 1 < chars.length) {
-        const nextChar = chars[i + 1];
+      if (c === '/' && i + 1 < len) {
+        const nextChar = input[i + 1];
 
         if (nextChar === '/') {
           // Single line comment: consume until newline
           i += 2;
-          while (i < chars.length && chars[i] !== '\n') {
+          while (i < len && input[i] !== '\n') {
             i++;
           }
           continue;
@@ -98,8 +101,8 @@ class Parser {
           // Multi-line comment: consume until */
           i += 2;
           let foundEnd = false;
-          while (i < chars.length) {
-            if (chars[i] === '*' && i + 1 < chars.length && chars[i + 1] === '/') {
+          while (i < len) {
+            if (input[i] === '*' && i + 1 < len && input[i + 1] === '/') {
               i += 2;
               foundEnd = true;
               break;
@@ -108,17 +111,17 @@ class Parser {
           }
           if (!foundEnd) {
             // Unterminated multi-line comment, treat as literal
-            result += '/*';
+            result.push('/*');
           }
           continue;
         }
       }
 
-      result += c;
+      result.push(c);
       i++;
     }
 
-    return result;
+    return result.join('');
   }
 
   /**
@@ -126,7 +129,7 @@ class Parser {
    */
   private skipSeparators(): void {
     while (this.pos < this.length) {
-      const c = this.chars[this.pos];
+      const c = this.input[this.pos];
       if (c === '\n' || c === ',') {
         this.pos++;
       } else {
@@ -139,7 +142,7 @@ class Parser {
    * Skip all whitespace
    */
   private skipWhitespace(): void {
-    while (this.pos < this.length && /\s/.test(this.chars[this.pos])) {
+    while (this.pos < this.length && REGEX_WHITESPACE.test(this.input[this.pos])) {
       this.pos++;
     }
   }
@@ -148,8 +151,13 @@ class Parser {
    * Skip spaces and tabs (but not newlines)
    */
   private skipSpacesAndTabs(): void {
-    while (this.pos < this.length && (this.chars[this.pos] === ' ' || this.chars[this.pos] === '\t')) {
-      this.pos++;
+    while (this.pos < this.length) {
+      const c = this.input[this.pos];
+      if (c === ' ' || c === '\t') {
+        this.pos++;
+      } else {
+        break;
+      }
     }
   }
 
@@ -163,24 +171,25 @@ class Parser {
       throw new JhonParseError('Expected key', this.pos);
     }
 
-    const quoteChar = this.chars[this.pos];
+    const quoteChar = this.input[this.pos];
 
     if (quoteChar === '"' || quoteChar === "'") {
       // Quoted key
       this.pos++; // skip opening quote
-      let key = '';
+      const parts: string[] = [];
 
       while (this.pos < this.length) {
-        if (this.chars[this.pos] === quoteChar) {
+        const c = this.input[this.pos];
+        if (c === quoteChar) {
           this.pos++; // skip closing quote
-          return key;
-        } else if (this.chars[this.pos] === '\\') {
+          return parts.join('');
+        } else if (c === '\\') {
           this.pos++;
           if (this.pos < this.length) {
-            key += this.parseEscapeSequence(quoteChar);
+            parts.push(this.parseEscapeSequence(quoteChar));
           }
         } else {
-          key += this.chars[this.pos];
+          parts.push(c);
           this.pos++;
         }
       }
@@ -191,12 +200,12 @@ class Parser {
       const start = this.pos;
       while (
         this.pos < this.length &&
-        (/[a-zA-Z0-9_-]/.test(this.chars[this.pos]))
+        REGEX_UNQUOTED_KEY.test(this.input[this.pos])
       ) {
         this.pos++;
       }
 
-      const key = this.chars.slice(start, this.pos).join('');
+      const key = this.input.substring(start, this.pos);
       if (key === '') {
         throw new JhonParseError('Empty key', this.pos);
       }
@@ -208,7 +217,7 @@ class Parser {
    * Parse an escape sequence
    */
   private parseEscapeSequence(quoteChar: string): string {
-    const c = this.chars[this.pos];
+    const c = this.input[this.pos];
     this.pos++;
 
     switch (c) {
@@ -232,7 +241,7 @@ class Parser {
         if (this.pos + 3 >= this.length) {
           throw new JhonParseError('Incomplete Unicode escape sequence', this.pos);
         }
-        const hex = this.chars.slice(this.pos, this.pos + 4).join('');
+        const hex = this.input.substring(this.pos, this.pos + 4);
         this.pos += 4;
         const codePoint = parseInt(hex, 16);
         if (isNaN(codePoint)) {
@@ -256,7 +265,7 @@ class Parser {
       throw new JhonParseError('Expected value', this.pos);
     }
 
-    const c = this.chars[this.pos];
+    const c = this.input[this.pos];
 
     if (c === '"' || c === "'") {
       return this.parseStringValue();
@@ -281,22 +290,23 @@ class Parser {
    * Parse a string value
    */
   private parseStringValue(): string {
-    const quoteChar = this.chars[this.pos];
+    const quoteChar = this.input[this.pos];
     this.pos++; // skip opening quote
 
-    let result = '';
+    const parts: string[] = [];
 
     while (this.pos < this.length) {
-      if (this.chars[this.pos] === quoteChar) {
+      const c = this.input[this.pos];
+      if (c === quoteChar) {
         this.pos++; // skip closing quote
-        return result;
-      } else if (this.chars[this.pos] === '\\') {
+        return parts.join('');
+      } else if (c === '\\') {
         this.pos++;
         if (this.pos < this.length) {
-          result += this.parseEscapeSequence(quoteChar);
+          parts.push(this.parseEscapeSequence(quoteChar));
         }
       } else {
-        result += this.chars[this.pos];
+        parts.push(c);
         this.pos++;
       }
     }
@@ -308,7 +318,7 @@ class Parser {
    * Parse a raw string value (r"..." or r#"..."# or r##"..."##, etc.)
    */
   private parseRawStringValue(): string {
-    if (this.chars[this.pos] !== 'r' && this.chars[this.pos] !== 'R') {
+    if (this.input[this.pos] !== 'r' && this.input[this.pos] !== 'R') {
       throw new JhonParseError('Expected raw string', this.pos);
     }
     this.pos++; // skip 'r' or 'R'
@@ -319,12 +329,12 @@ class Parser {
 
     // Count the number of # symbols
     let hashCount = 0;
-    while (this.pos < this.length && this.chars[this.pos] === '#') {
+    while (this.pos < this.length && this.input[this.pos] === '#') {
       hashCount++;
       this.pos++;
     }
 
-    if (this.pos >= this.length || this.chars[this.pos] !== '"') {
+    if (this.pos >= this.length || this.input[this.pos] !== '"') {
       throw new JhonParseError('Expected opening quote after r and # symbols in raw string', this.pos);
     }
 
@@ -334,19 +344,19 @@ class Parser {
 
     // Look for the closing sequence: " followed by hashCount # symbols
     while (this.pos < this.length) {
-      if (this.chars[this.pos] === '"') {
+      if (this.input[this.pos] === '"') {
         // Check if there are enough # symbols after the quote
         if (this.pos + hashCount < this.length) {
           let isClosing = true;
           for (let j = 1; j <= hashCount; j++) {
-            if (this.chars[this.pos + j] !== '#') {
+            if (this.input[this.pos + j] !== '#') {
               isClosing = false;
               break;
             }
           }
 
           if (isClosing) {
-            const content = this.chars.slice(start, this.pos).join('');
+            const content = this.input.substring(start, this.pos);
             this.pos += hashCount + 1;
             return content;
           }
@@ -366,7 +376,7 @@ class Parser {
    * Parse an array
    */
   private parseArray(): JhonArray {
-    if (this.chars[this.pos] !== '[') {
+    if (this.input[this.pos] !== '[') {
       throw new JhonParseError('Expected [', this.pos);
     }
     this.pos++; // skip opening bracket
@@ -384,7 +394,7 @@ class Parser {
         throw new JhonParseError('Unterminated array', this.pos);
       }
 
-      if (this.chars[this.pos] === ']') {
+      if (this.input[this.pos] === ']') {
         this.pos++;
         return elements;
       }
@@ -401,7 +411,7 @@ class Parser {
    * Parse a nested object
    */
   public parseNestedObject(): JhonObject {
-    if (this.chars[this.pos] !== '{') {
+    if (this.input[this.pos] !== '{') {
       throw new JhonParseError('Expected {', this.pos);
     }
     this.pos++; // skip opening brace
@@ -419,7 +429,7 @@ class Parser {
         throw new JhonParseError('Unterminated nested object', this.pos);
       }
 
-      if (this.chars[this.pos] === '}') {
+      if (this.input[this.pos] === '}') {
         this.pos++;
         return obj;
       }
@@ -431,7 +441,7 @@ class Parser {
       this.skipWhitespace();
 
       // Expect =
-      if (this.pos >= this.length || this.chars[this.pos] !== '=') {
+      if (this.pos >= this.length || this.input[this.pos] !== '=') {
         throw new JhonParseError("Expected '=' after key in nested object", this.pos);
       }
       this.pos++;
@@ -456,14 +466,14 @@ class Parser {
     const start = this.pos;
 
     // Optional minus sign
-    if (this.pos < this.length && this.chars[this.pos] === '-') {
+    if (this.pos < this.length && this.input[this.pos] === '-') {
       this.pos++;
     }
 
     // Digits before decimal point (underscores allowed as digit separators)
     let hasDigits = false;
-    while (this.pos < this.length && (/[0-9]/.test(this.chars[this.pos]) || this.chars[this.pos] === '_')) {
-      if (this.chars[this.pos] !== '_') {
+    while (this.pos < this.length && (REGEX_DIGIT.test(this.input[this.pos]) || this.input[this.pos] === '_')) {
+      if (this.input[this.pos] !== '_') {
         hasDigits = true;
       }
       this.pos++;
@@ -474,11 +484,11 @@ class Parser {
     }
 
     // Optional decimal part
-    if (this.pos < this.length && this.chars[this.pos] === '.') {
+    if (this.pos < this.length && this.input[this.pos] === '.') {
       this.pos++;
       let hasDecimalDigits = false;
-      while (this.pos < this.length && (/[0-9]/.test(this.chars[this.pos]) || this.chars[this.pos] === '_')) {
-        if (this.chars[this.pos] !== '_') {
+      while (this.pos < this.length && (REGEX_DIGIT.test(this.input[this.pos]) || this.input[this.pos] === '_')) {
+        if (this.input[this.pos] !== '_') {
           hasDecimalDigits = true;
         }
         this.pos++;
@@ -489,7 +499,7 @@ class Parser {
     }
 
     // Build number string without underscores
-    const numStr = this.chars.slice(start, this.pos).filter(c => c !== '_').join('');
+    const numStr = this.input.substring(start, this.pos).replace(/_/g, '');
     const num = parseFloat(numStr);
 
     if (isNaN(num)) {
@@ -505,20 +515,20 @@ class Parser {
   private parseBoolean(): boolean {
     if (
       this.pos + 3 < this.length &&
-      this.chars[this.pos] === 't' &&
-      this.chars[this.pos + 1] === 'r' &&
-      this.chars[this.pos + 2] === 'u' &&
-      this.chars[this.pos + 3] === 'e'
+      this.input[this.pos] === 't' &&
+      this.input[this.pos + 1] === 'r' &&
+      this.input[this.pos + 2] === 'u' &&
+      this.input[this.pos + 3] === 'e'
     ) {
       this.pos += 4;
       return true;
     } else if (
       this.pos + 4 < this.length &&
-      this.chars[this.pos] === 'f' &&
-      this.chars[this.pos + 1] === 'a' &&
-      this.chars[this.pos + 2] === 'l' &&
-      this.chars[this.pos + 3] === 's' &&
-      this.chars[this.pos + 4] === 'e'
+      this.input[this.pos] === 'f' &&
+      this.input[this.pos + 1] === 'a' &&
+      this.input[this.pos + 2] === 'l' &&
+      this.input[this.pos + 3] === 's' &&
+      this.input[this.pos + 4] === 'e'
     ) {
       this.pos += 5;
       return false;
@@ -533,10 +543,10 @@ class Parser {
   private parseNull(): null {
     if (
       this.pos + 3 < this.length &&
-      this.chars[this.pos] === 'n' &&
-      this.chars[this.pos + 1] === 'u' &&
-      this.chars[this.pos + 2] === 'l' &&
-      this.chars[this.pos + 3] === 'l'
+      this.input[this.pos] === 'n' &&
+      this.input[this.pos + 1] === 'u' &&
+      this.input[this.pos + 2] === 'l' &&
+      this.input[this.pos + 3] === 'l'
     ) {
       this.pos += 4;
       return null;
@@ -569,7 +579,7 @@ class Parser {
       this.skipWhitespace();
 
       // Expect =
-      if (this.pos >= this.length || this.chars[this.pos] !== '=') {
+      if (this.pos >= this.length || this.input[this.pos] !== '=') {
         throw new JhonParseError("Expected '=' after key", this.pos);
       }
       this.pos++;
