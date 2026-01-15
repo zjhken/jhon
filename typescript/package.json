@@ -1,7 +1,7 @@
 {
   "name": "jhon",
   "version": "1.0.0",
-  "description": "JHON - JSON-like Human Optimized Notation config language parser and serializer",
+  "description": "JHON - JinHui's Object Notation config language parser and serializer",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",

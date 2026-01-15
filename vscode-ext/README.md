@@ -11,7 +11,7 @@ JHON is a JSON-like configuration format with flexible syntax and enhanced reada
 - ✅ Full syntax highlighting for JHON files
 - ✅ **Automatic formatting** with customizable options
 - ✅ Support for single-line (`//`) and multi-line (`/* */`) comments
-- ✅ Flexible separators (spaces, tabs, newlines, commas)
+- ✅ Clean separators (commas or newlines)
 - ✅ Support for nested objects and arrays
 - ✅ String literals (including raw strings with `r"..."` and `R"..."` syntax)
 - ✅ All JSON data types: strings, numbers, booleans, null
@@ -49,7 +49,7 @@ log_level="info"
 
 ## Key Features of JHON
 
-1. **Flexible Separators**: Use spaces, tabs, newlines, or commas to separate properties
+1. **Clean Separators**: Use commas or newlines to separate properties
 2. **Optional Quotes**: Keys can be quoted or unquoted
 3. **Comments**: Both single-line and multi-line comments supported
 4. **Nested Structures**: Support for objects and arrays with unlimited nesting depth

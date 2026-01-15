@@ -250,7 +250,7 @@ describe('parse', () => {
   });
 
   test('nested objects', () => {
-    const result = parse('server={host="localhost", port=8080}');
+    const result = parse('server={host="localhost",port=8080}');
     expect(result).toEqual({
       server: {
         host: 'localhost',
@@ -258,7 +258,7 @@ describe('parse', () => {
       },
     });
 
-    const result2 = parse('config={name="test" value=123}');
+    const result2 = parse('config={name="test",value=123}');
     expect(result2).toEqual({
       config: {
         name: 'test',
@@ -266,7 +266,7 @@ describe('parse', () => {
       },
     });
 
-    const result3 = parse('data={items=[1 2 3] active=true}');
+    const result3 = parse('data={items=[1,2,3],active=true}');
     expect(result3).toEqual({
       data: {
         items: [1, 2, 3],
@@ -274,7 +274,7 @@ describe('parse', () => {
       },
     });
 
-    const result4 = parse('outer={inner={deep="value"} number=42}');
+    const result4 = parse('outer={inner={deep="value"},number=42}');
     expect(result4).toEqual({
       outer: {
         inner: {
@@ -312,26 +312,51 @@ describe('parse', () => {
     expect(result2.double_hash).toBe('This has "quotes" and # hashes');
   });
 
-  test('flexible separators in objects', () => {
-    const result = parse('a="hello" b="world"');
+  test('comma and newline separators in objects', () => {
+    // Comma-separated
+    const result = parse('a="hello",b="world"');
     expect(result).toEqual({
       a: 'hello',
       b: 'world',
     });
 
+    // Newline-separated
     const result2 = parse('name="test"\nage=25');
     expect(result2).toEqual({
       name: 'test',
       age: 25,
     });
+
+    // Mixed commas and newlines
+    const result3 = parse('a=1,b=2\nc=3');
+    expect(result3).toEqual({
+      a: 1,
+      b: 2,
+      c: 3,
+    });
   });
 
-  test('flexible separators in arrays', () => {
-    const result = parse('arr=[1 2 3]');
+  test('comma and newline separators in arrays', () => {
+    // Comma-separated
+    const result = parse('arr=[1,2,3]');
     expect(result).toEqual({ arr: [1, 2, 3] });
 
+    // Newline-separated
     const result2 = parse('items=[\n"a"\n"b"\n"c"]');
     expect(result2).toEqual({ items: ['a', 'b', 'c'] });
+
+    // Mixed
+    const result3 = parse('nums=[1,2\n3]');
+    expect(result3).toEqual({ nums: [1, 2, 3] });
+  });
+
+  test('space-only separators are rejected', () => {
+    // Objects with space separators should fail
+    expect(() => parse('a="hello" b="world"')).toThrow('Expected comma or newline between properties');
+    expect(() => parse('obj={a=1 b=2}')).toThrow('Expected comma or newline between object properties');
+
+    // Arrays with space separators should fail
+    expect(() => parse('arr=[1 2 3]')).toThrow('Expected comma or newline between array elements');
   });
 
   test('single quoted strings', () => {
@@ -446,14 +471,14 @@ describe('parse', () => {
   });
 
   test('unquoted keys no special chars', () => {
-    const result = parse('name="value" user_name="test" age=25');
+    const result = parse('name="value"\nuser_name="test"\nage=25');
     expect(result).toEqual({
       name: 'value',
       user_name: 'test',
       age: 25,
     });
 
-    const result2 = parse('my-key="value" another-key="test"');
+    const result2 = parse('my-key="value",another-key="test"');
     expect(result2).toEqual({
       'my-key': 'value',
       'another-key': 'test',

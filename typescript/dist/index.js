@@ -1,5 +1,5 @@
 /**
- * JHON - JSON-like Human Optimized Notation
+ * JHON - JinHui's Object Notation
  * A configuration language parser and serializer
  */
 // ============================================================================
@@ -85,6 +85,32 @@ class Parser {
                 break;
             }
         }
+    }
+    /**
+     * Check if there's a separator (comma or newline) at current position
+     * Skips spaces and tabs while looking, but doesn't consume them
+     * Returns false if at closing character (] or })
+     */
+    peekSeparator(closingChar) {
+        let tempPos = this.pos;
+        while (tempPos < this.length) {
+            const c = this.input[tempPos];
+            if (c === ' ' || c === '\t') {
+                // Skip spaces/tabs when looking for separator
+                tempPos++;
+            }
+            else if (c === '\n' || c === ',') {
+                return true;
+            }
+            else if (c === closingChar) {
+                // At closing character, no separator needed
+                return true;
+            }
+            else {
+                return false;
+            }
+        }
+        return false;
     }
     /**
      * Skip all whitespace
@@ -308,9 +334,16 @@ class Parser {
         }
         this.pos++; // skip opening bracket
         const elements = [];
+        let isFirst = true;
         while (this.pos < this.length) {
-            // Skip separators (only newlines and commas)
-            this.skipSeparators();
+            // For elements after the first, require a separator (comma or newline)
+            if (!isFirst) {
+                const hasSeparator = this.peekSeparator(']');
+                if (!hasSeparator) {
+                    throw new JhonParseError('Expected comma or newline between array elements', this.pos);
+                }
+                this.skipSeparators();
+            }
             // Skip leading spaces and tabs before parsing value
             this.skipSpacesAndTabs();
             if (this.pos >= this.length) {
@@ -323,6 +356,7 @@ class Parser {
             // Parse element
             const element = this.parseValue();
             elements.push(element);
+            isFirst = false;
         }
         throw new JhonParseError('Unterminated array', this.pos);
     }
@@ -335,9 +369,16 @@ class Parser {
         }
         this.pos++; // skip opening brace
         const obj = {};
+        let isFirst = true;
         while (this.pos < this.length) {
-            // Skip separators (only newlines and commas)
-            this.skipSeparators();
+            // For properties after the first, require a separator (comma or newline)
+            if (!isFirst) {
+                const hasSeparator = this.peekSeparator('}');
+                if (!hasSeparator) {
+                    throw new JhonParseError('Expected comma or newline between object properties', this.pos);
+                }
+                this.skipSeparators();
+            }
             // Skip leading spaces and tabs before parsing key
             this.skipSpacesAndTabs();
             if (this.pos >= this.length) {
@@ -362,6 +403,7 @@ class Parser {
             const value = this.parseValue();
             // Insert into object
             obj[key] = value;
+            isFirst = false;
         }
         throw new JhonParseError('Unterminated nested object', this.pos);
     }
@@ -453,9 +495,16 @@ class Parser {
      */
     parseJhonObject() {
         const obj = {};
+        let isFirst = true;
         while (this.pos < this.length) {
-            // Skip separators (only newlines and commas)
-            this.skipSeparators();
+            // For properties after the first, require a separator (comma or newline)
+            if (!isFirst) {
+                const hasSeparator = this.peekSeparator('');
+                if (!hasSeparator) {
+                    throw new JhonParseError('Expected comma or newline between properties', this.pos);
+                }
+                this.skipSeparators();
+            }
             // Skip all remaining spaces and tabs before parsing key
             this.skipSpacesAndTabs();
             if (this.pos >= this.length) {
@@ -476,6 +525,7 @@ class Parser {
             const value = this.parseValue();
             // Insert into object
             obj[key] = value;
+            isFirst = false;
             // Skip separators after value (only newlines and commas)
             // Don't advance here - let the loop handle it
         }

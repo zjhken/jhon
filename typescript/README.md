@@ -1,4 +1,4 @@
-# JHON - JSON-like Human Optimized Notation
+# JHON - JinHui's Object Notation
 
 A lightweight configuration language parser and serializer for TypeScript/JavaScript. JHON provides a clean, readable syntax for configuration files while maintaining full compatibility with JSON data structures.
 

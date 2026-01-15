@@ -1,8 +1,9 @@
 /**
- * Benchmark test comparing JSON vs JHON parsing performance
+ * Benchmark test comparing JSON vs JHON vs TOML parsing performance
  */
 import { parse, serialize } from './index';
-// Create a complex test data structure (safe for both JSON and JHON)
+import TOML from 'toml';
+// Create a complex test data structure (compatible with JSON, JHON, and TOML)
 function createTestData() {
     return {
         app_name: 'ocean-note',
@@ -130,6 +131,55 @@ function createTestData() {
         },
     };
 }
+// Convert test data to TOML format
+function toTOML(obj, indent = 0) {
+    const spaces = '  '.repeat(indent);
+    let result = '';
+    if (Array.isArray(obj)) {
+        // TOML requires array of tables for objects in arrays
+        obj.forEach((item, idx) => {
+            if (typeof item === 'object' && item !== null) {
+                result += `\n${spaces}[[items]]\n`;
+                result += toTOML(item, indent);
+            }
+        });
+    }
+    else if (typeof obj === 'object' && obj !== null) {
+        for (const [key, value] of Object.entries(obj)) {
+            if (typeof value === 'object' && value !== null) {
+                if (Array.isArray(value)) {
+                    // Array of inline tables or primitive values
+                    if (value.length > 0 && typeof value[0] === 'object') {
+                        // Array of tables - handled at parent level
+                    }
+                    else {
+                        // Inline array
+                        result += `${spaces}${key} = ${JSON.stringify(value)}\n`;
+                    }
+                }
+                else {
+                    // Nested object - create a table
+                    result += `\n${spaces}[${key}]\n`;
+                    result += toTOML(value, indent);
+                }
+            }
+            else if (typeof value === 'string') {
+                result += `${spaces}${key} = "${value}"\n`;
+            }
+            else if (typeof value === 'boolean') {
+                result += `${spaces}${key} = ${value}\n`;
+            }
+            else if (value === null) {
+                // TOML doesn't have null, skip or use empty string
+                result += `${spaces}${key} = ""\n`;
+            }
+            else {
+                result += `${spaces}${key} = ${value}\n`;
+            }
+        }
+    }
+    return result;
+}
 // Benchmark function
 function benchmark(name, fn, iterations = 10000) {
     const start = performance.now();
@@ -151,7 +201,7 @@ function benchmark(name, fn, iterations = 10000) {
 // Main benchmark
 function runBenchmark() {
     console.log('='.repeat(80));
-    console.log('JSON vs JHON Parsing Performance Benchmark');
+    console.log('JSON vs JHON vs TOML Parsing Performance Benchmark');
     console.log('='.repeat(80));
     console.log();
     // Create test data
@@ -166,8 +216,17 @@ function runBenchmark() {
     console.log(`JHON string size: ${jhonString.length} bytes`);
     console.log(`JHON string preview: ${jhonString.substring(0, 100)}...`);
     console.log();
-    const sizeDiff = ((jhonString.length - jsonString.length) / jsonString.length) * 100;
-    console.log(`Size difference: ${sizeDiff > 0 ? '+' : ''}${sizeDiff.toFixed(2)}%`);
+    // Serialize to TOML
+    const tomlString = toTOML(testData);
+    console.log(`TOML string size: ${tomlString.length} bytes`);
+    console.log(`TOML string preview: ${tomlString.substring(0, 100)}...`);
+    console.log();
+    // Size comparisons
+    const jhonSizeDiff = ((jhonString.length - jsonString.length) / jsonString.length) * 100;
+    const tomlSizeDiff = ((tomlString.length - jsonString.length) / jsonString.length) * 100;
+    console.log('Size Comparison (relative to JSON):');
+    console.log(`  JHON: ${jhonSizeDiff > 0 ? '+' : ''}${jhonSizeDiff.toFixed(2)}%`);
+    console.log(`  TOML: ${tomlSizeDiff > 0 ? '+' : ''}${tomlSizeDiff.toFixed(2)}%`);
     console.log();
     console.log('-'.repeat(80));
     console.log();
@@ -176,6 +235,12 @@ function runBenchmark() {
     for (let i = 0; i < 1000; i++) {
         JSON.parse(jsonString);
         parse(jhonString);
+        try {
+            TOML.parse(tomlString);
+        }
+        catch (e) {
+            // TOML parsing might fail for complex structures
+        }
     }
     console.log('Warm up complete.');
     console.log();
@@ -190,6 +255,20 @@ function runBenchmark() {
     const jhonResults = benchmark('JHON.parse', () => {
         parse(jhonString);
     }, iterations);
+    let tomlResults;
+    try {
+        tomlResults = benchmark('TOML.parse', () => {
+            try {
+                TOML.parse(tomlString);
+            }
+            catch (e) {
+                // Ignore errors in benchmark
+            }
+        }, iterations);
+    }
+    catch (e) {
+        console.log('TOML parsing skipped (unsupported structure)');
+    }
     // Display results
     console.log('-'.repeat(80));
     console.log();
@@ -205,17 +284,29 @@ function runBenchmark() {
     console.log(`    Average time:    ${jhonResults.avgTime} ms`);
     console.log(`    Operations/sec:  ${jhonResults.opsPerSec}`);
     console.log();
-    // Calculate comparison
+    if (tomlResults) {
+        console.log(`  ${tomlResults.name}:`);
+        console.log(`    Total time:      ${tomlResults.totalTime} ms`);
+        console.log(`    Average time:    ${tomlResults.avgTime} ms`);
+        console.log(`    Operations/sec:  ${tomlResults.opsPerSec}`);
+        console.log();
+    }
+    // Calculate comparisons
     const jsonTime = parseFloat(jsonResults.totalTime);
     const jhonTime = parseFloat(jhonResults.totalTime);
-    const ratio = jhonTime / jsonTime;
-    const percentDiff = (ratio - 1) * 100;
+    const jhonRatio = jhonTime / jsonTime;
+    const jhonPercentDiff = (jhonRatio - 1) * 100;
     console.log('-'.repeat(80));
     console.log();
-    console.log('Comparison:');
+    console.log('Performance Comparison (vs JSON):');
     console.log();
-    console.log(`  JHON is ${ratio < 1 ? 'faster' : 'slower'} than JSON by ${Math.abs(percentDiff).toFixed(2)}%`);
-    console.log(`  Ratio: ${ratio.toFixed(2)}x`);
+    console.log(`  JHON: ${jhonRatio < 1 ? 'faster' : 'slower'} by ${Math.abs(jhonPercentDiff).toFixed(2)}% (${jhonRatio.toFixed(2)}x)`);
+    if (tomlResults) {
+        const tomlTime = parseFloat(tomlResults.totalTime);
+        const tomlRatio = tomlTime / jsonTime;
+        const tomlPercentDiff = (tomlRatio - 1) * 100;
+        console.log(`  TOML: ${tomlRatio < 1 ? 'faster' : 'slower'} by ${Math.abs(tomlPercentDiff).toFixed(2)}% (${tomlRatio.toFixed(2)}x)`);
+    }
     console.log();
     // Verify correctness
     console.log('-'.repeat(80));
@@ -256,14 +347,24 @@ function runBenchmark() {
         return true;
     }
     if (deepEqual(jsonParsed, jhonParsed)) {
-        console.log('  ✓ Both parsers produced semantically identical results');
+        console.log('  ✓ JSON and JHON parsers produced semantically identical results');
         console.log('  (Note: JHON sorts object keys alphabetically by default)');
     }
     else {
-        console.log('  ✗ Parsers produced different results!');
-        console.log();
-        console.log('  JSON parsed keys:', Object.keys(jsonParsed).length);
-        console.log('  JHON parsed keys:', Object.keys(jhonParsed).length);
+        console.log('  ✗ JSON and JHON parsers produced different results!');
+    }
+    try {
+        const tomlParsed = TOML.parse(tomlString);
+        if (deepEqual(jsonParsed, tomlParsed)) {
+            console.log('  ✓ JSON and TOML parsers produced semantically identical results');
+        }
+        else {
+            console.log('  ✗ JSON and TOML parsers produced different results!');
+            console.log('  (Note: TOML has structural limitations for complex nested data)');
+        }
+    }
+    catch (e) {
+        console.log('  ⚠ TOML parsing failed (structure not fully compatible with TOML format)');
     }
     console.log();
     console.log('='.repeat(80));

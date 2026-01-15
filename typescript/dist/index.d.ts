@@ -1,5 +1,5 @@
 /**
- * JHON - JSON-like Human Optimized Notation
+ * JHON - JinHui's Object Notation
  * A configuration language parser and serializer
  */
 export type JhonValue = string | number | boolean | null | JhonObject | JhonArray;
