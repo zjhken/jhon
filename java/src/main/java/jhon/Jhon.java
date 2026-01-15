@@ -1,11 +1,11 @@
 package jhon;
 
 import java.util.*;
-import java.util.regex.Pattern;
 
 /**
  * JHON - JinHui's Object Notation
  * A configuration language parser and serializer
+ * Optimized for performance
  */
 public class Jhon {
 
@@ -17,16 +17,20 @@ public class Jhon {
      * Parse a JHON config string into a value
      */
     public static Object parse(String input) throws JhonParseException {
-        String cleaned = removeComments(input).trim();
+        char[] cleaned = removeComments(input);
 
-        if (cleaned.isEmpty()) {
+        int start = 0, end = cleaned.length;
+        while (start < end && isWhitespace(cleaned[start])) start++;
+        while (end > start && isWhitespace(cleaned[end - 1])) end--;
+
+        if (start >= end) {
             return new LinkedHashMap<String, Object>();
         }
 
-        Parser parser = new Parser(cleaned);
+        Parser parser = new Parser(cleaned, start, end);
 
         // Handle top-level objects wrapped in braces
-        if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
+        if (cleaned[start] == '{' && cleaned[end - 1] == '}') {
             return parser.parseNestedObject();
         }
 
@@ -51,81 +55,78 @@ public class Jhon {
      * Serialize a value with options
      */
     public static String serialize(Object value, boolean pretty, String indent) {
-        Serializer serializer = new Serializer();
+        StringBuilder sb = new StringBuilder();
         if (pretty) {
-            return serializer.serializePretty(value, indent, 0, false);
+            return serializePretty(value, indent, 0, false);
         }
-        return serializer.serializeCompact(value);
+        serializeCompact(value, sb);
+        return sb.toString();
     }
 
     // =============================================================================
-    // Remove Comments
+    // Remove Comments (Optimized with char array)
     // =============================================================================
 
-    static String removeComments(String input) {
-        StringBuilder result = new StringBuilder();
+    static char[] removeComments(String input) {
+        char[] chars = input.toCharArray();
+        char[] result = new char[chars.length];
+        int pos = 0;
+        int len = chars.length;
         int i = 0;
-        int len = input.length();
 
         while (i < len) {
-            char c = input.charAt(i);
+            char c = chars[i];
 
             if (c == '/' && i + 1 < len) {
-                char nextChar = input.charAt(i + 1);
+                char nextChar = chars[i + 1];
 
                 if (nextChar == '/') {
-                    // Single line comment
+                    // Single line comment: skip to newline
                     i += 2;
-                    while (i < len && input.charAt(i) != '\n') {
+                    while (i < len && chars[i] != '\n') {
                         i++;
                     }
                     continue;
                 } else if (nextChar == '*') {
-                    // Multi-line comment
+                    // Multi-line comment: skip to */
                     i += 2;
-                    boolean foundEnd = false;
                     while (i < len) {
-                        if (input.charAt(i) == '*' && i + 1 < len && input.charAt(i + 1) == '/') {
+                        if (chars[i] == '*' && i + 1 < len && chars[i + 1] == '/') {
                             i += 2;
-                            foundEnd = true;
                             break;
                         }
                         i++;
-                    }
-                    if (!foundEnd) {
-                        result.append("/*");
                     }
                     continue;
                 }
             }
 
-            result.append(c);
-            i++;
+            result[pos++] = chars[i++];
         }
 
-        return result.toString();
+        return Arrays.copyOf(result, pos);
     }
 
     // =============================================================================
-    // Parser Class
+    // Parser Class (Optimized)
     // =============================================================================
 
     static class Parser {
-        private final String input;
+        private final char[] input;
         private int pos;
-        private final int len;
+        private final int end;
 
-        Parser(String input) {
+        Parser(char[] input, int start, int end) {
             this.input = input;
-            this.pos = 0;
-            this.len = input.length();
+            this.pos = start;
+            this.end = end;
         }
 
         Map<String, Object> parseJhonObject() throws JhonParseException {
             Map<String, Object> obj = new LinkedHashMap<>();
             boolean isFirst = true;
 
-            while (pos < len) {
+            while (pos < end) {
                 if (!isFirst) {
                     if (!peekSeparator((char) 0)) {
                         throw new JhonParseException("Expected comma or newline between properties", pos);
@@ -135,7 +136,7 @@ public class Jhon {
 
                 skipSpacesAndTabs();
 
-                if (pos >= len) {
+                if (pos >= end) {
                     break;
                 }
 
@@ -143,7 +144,7 @@ public class Jhon {
 
                 skipWhitespace();
 
-                if (pos >= len || input.charAt(pos) != '=') {
+                if (pos >= end || input[pos] != '=') {
                     throw new JhonParseException("Expected '=' after key", pos);
                 }
                 pos++;
@@ -160,7 +161,7 @@ public class Jhon {
         }
 
         Map<String, Object> parseNestedObject() throws JhonParseException {
-            if (pos >= len || input.charAt(pos) != '{') {
+            if (pos >= end || input[pos] != '{') {
                 throw new JhonParseException("Expected '{'", pos);
             }
             pos++;
@@ -168,7 +169,7 @@ public class Jhon {
             Map<String, Object> obj = new LinkedHashMap<>();
             boolean isFirst = true;
 
-            while (pos < len) {
+            while (pos < end) {
                 if (!isFirst) {
                     if (!peekSeparator('}')) {
                         throw new JhonParseException("Expected comma or newline between object properties", pos);
@@ -178,11 +179,11 @@ public class Jhon {
 
                 skipSpacesAndTabs();
 
-                if (pos >= len) {
+                if (pos >= end) {
                     throw new JhonParseException("Unterminated nested object", pos);
                 }
 
-                if (input.charAt(pos) == '}') {
+                if (input[pos] == '}') {
                     pos++;
                     return obj;
                 }
@@ -191,7 +192,7 @@ public class Jhon {
 
                 skipWhitespace();
 
-                if (pos >= len || input.charAt(pos) != '=') {
+                if (pos >= end || input[pos] != '=') {
                     throw new JhonParseException("Expected '=' after key in nested object", pos);
                 }
                 pos++;
@@ -210,57 +211,68 @@ public class Jhon {
         String parseKey() throws JhonParseException {
             skipWhitespace();
 
-            if (pos >= len) {
+            if (pos >= end) {
                 throw new JhonParseException("Expected key", pos);
             }
 
-            char c = input.charAt(pos);
+            char c = input[pos];
 
             if (c == '"' || c == '\'') {
-                // Quoted key
+                // Quoted key - parse inline without StringBuilder
                 char quoteChar = c;
                 pos++;
+                int start = pos;
 
-                StringBuilder result = new StringBuilder();
-                while (pos < len) {
-                    if (input.charAt(pos) == quoteChar) {
+                while (pos < end) {
+                    if (input[pos] == quoteChar) {
+                        String result = new String(input, start, pos - start);
                         pos++;
-                        return result.toString();
-                    } else if (input.charAt(pos) == '\\') {
+                        return unescapeString(result, input, start - 1, pos);
+                    } else if (input[pos] == '\\' && pos + 1 < end) {
+                        // Has escape, need to use StringBuilder
+                        StringBuilder sb = new StringBuilder();
+                        sb.append(input, start, pos - start);
                         pos++;
-                        if (pos < len) {
-                            result.append(parseEscapeSequence(quoteChar));
+                        sb.append(parseEscapeSequence(quoteChar));
+                        while (pos < end) {
+                            if (input[pos] == quoteChar) {
+                                pos++;
+                                return sb.toString();
+                            } else if (input[pos] == '\\' && pos + 1 < end) {
+                                pos++;
+                                sb.append(parseEscapeSequence(quoteChar));
+                            } else {
+                                sb.append(input[pos++]);
+                            }
                         }
-                    } else {
-                        result.append(input.charAt(pos));
-                        pos++;
+                        throw new JhonParseException("Unterminated string in key", pos);
                     }
+                    pos++;
                 }
                 throw new JhonParseException("Unterminated string in key", pos);
             }
 
-            // Unquoted key
+            // Unquoted key - extract directly
             int start = pos;
-            while (pos < len && isUnquotedKeyChar(input.charAt(pos))) {
+            while (pos < end && isUnquotedKeyChar(input[pos])) {
                 pos++;
             }
 
-            String key = input.substring(start, pos);
-            if (key.isEmpty()) {
+            if (start == pos) {
                 throw new JhonParseException("Empty key", pos);
             }
 
-            return key;
+            return new String(input, start, pos - start);
         }
 
         Object parseValue() throws JhonParseException {
             skipWhitespace();
 
-            if (pos >= len) {
+            if (pos >= end) {
                 throw new JhonParseException("Expected value", pos);
             }
 
-            char c = input.charAt(pos);
+            char c = input[pos];
 
             if (c == '"' || c == '\'') {
                 return parseStringValue();
@@ -270,7 +282,7 @@ public class Jhon {
                 return parseArray();
             } else if (c == '{') {
                 return parseNestedObject();
-            } else if (Character.isDigit(c) || c == '-') {
+            } else if (isDigit(c) || c == '-') {
                 return parseNumber();
             } else if (c == 't' || c == 'f') {
                 return parseBoolean();
@@ -282,22 +294,34 @@ public class Jhon {
         }
 
         String parseStringValue() throws JhonParseException {
-            char quoteChar = input.charAt(pos);
+            char quoteChar = input[pos];
             pos++;
 
-            StringBuilder result = new StringBuilder();
-            while (pos < len) {
-                if (input.charAt(pos) == quoteChar) {
+            // First, try to parse without escapes (fast path)
+            int start = pos;
+            while (pos < end && input[pos] != quoteChar && input[pos] != '\\') {
+                pos++;
+            }
+
+            if (pos < end && input[pos] == quoteChar) {
+                String result = new String(input, start, pos - start);
+                pos++;
+                return result;
+            }
+
+            // Has escapes or need to continue
+            StringBuilder result = new StringBuilder(pos - start + 16);
+            result.append(input, start, pos - start);
+
+            while (pos < end) {
+                if (input[pos] == quoteChar) {
                     pos++;
                     return result.toString();
-                } else if (input.charAt(pos) == '\\') {
+                } else if (input[pos] == '\\' && pos + 1 < end) {
                     pos++;
-                    if (pos < len) {
-                        result.append(parseEscapeSequence(quoteChar));
-                    }
+                    result.append(parseEscapeSequence(quoteChar));
                 } else {
-                    result.append(input.charAt(pos));
-                    pos++;
+                    result.append(input[pos++]);
                 }
             }
 
@@ -305,23 +329,23 @@ public class Jhon {
         }
 
         String parseRawStringValue() throws JhonParseException {
-            if (pos >= len || (input.charAt(pos) != 'r' && input.charAt(pos) != 'R')) {
+            if (pos >= end || (input[pos] != 'r' && input[pos] != 'R')) {
                 throw new JhonParseException("Expected raw string", pos);
             }
             pos++;
 
-            if (pos >= len) {
+            if (pos >= end) {
                 throw new JhonParseException("Unexpected end of input in raw string", pos);
             }
 
             // Count hash symbols
             int hashCount = 0;
-            while (pos < len && input.charAt(pos) == '#') {
+            while (pos < end && input[pos] == '#') {
                 hashCount++;
                 pos++;
             }
 
-            if (pos >= len || input.charAt(pos) != '"') {
+            if (pos >= end || input[pos] != '"') {
                 throw new JhonParseException("Expected opening quote after r and # symbols in raw string", pos);
             }
             pos++;
@@ -329,19 +353,19 @@ public class Jhon {
             int start = pos;
 
             // Look for closing sequence
-            while (pos < len) {
-                if (input.charAt(pos) == '"') {
-                    if (pos + hashCount < len) {
+            while (pos < end) {
+                if (input[pos] == '"') {
+                    if (pos + hashCount < end) {
                         boolean isClosing = true;
                         for (int j = 1; j <= hashCount; j++) {
-                            if (input.charAt(pos + j) != '#') {
+                            if (input[pos + j] != '#') {
                                 isClosing = false;
                                 break;
                             }
                         }
 
                         if (isClosing) {
-                            String content = input.substring(start, pos);
+                            String content = new String(input, start, pos - start);
                             pos += hashCount + 1;
                             return content;
                         }
@@ -351,55 +375,45 @@ public class Jhon {
                 pos++;
             }
 
-            throw new JhonParseException("Unterminated raw string (expected closing: \"" +
-                    "#".repeat(hashCount) + "\")", pos);
+            throw new JhonParseException("Unterminated raw string", pos);
         }
 
         char parseEscapeSequence(char quoteChar) throws JhonParseException {
-            if (pos >= len) {
+            if (pos >= end) {
                 throw new JhonParseException("Incomplete escape sequence", pos);
             }
 
-            char c = input.charAt(pos);
-            pos++;
-
-            switch (c) {
-                case 'n':
-                    return '\n';
-                case 'r':
-                    return '\r';
-                case 't':
-                    return '\t';
-                case 'b':
-                    return '\b';
-                case 'f':
-                    return '\f';
-                case '\\':
-                    return '\\';
-                case '"':
-                case '\'':
-                    return c;
-                case 'u': {
+            char c = input[pos++];
+            return switch (c) {
+                case 'n' -> '\n';
+                case 'r' -> '\r';
+                case 't' -> '\t';
+                case 'b' -> '\b';
+                case 'f' -> '\f';
+                case '\\' -> '\\';
+                case '"', '\'' -> c;
+                case 'u' -> {
                     // Unicode escape
-                    if (pos + 3 >= len) {
+                    if (pos + 3 >= end) {
                         throw new JhonParseException("Incomplete Unicode escape sequence", pos);
                     }
-                    String hex = input.substring(pos, pos + 4);
-                    pos += 4;
-                    try {
-                        int codePoint = Integer.parseInt(hex, 16);
-                        return (char) codePoint;
-                    } catch (NumberFormatException e) {
-                        throw new JhonParseException("Invalid Unicode escape sequence", pos - 4);
+                    int codePoint = 0;
+                    for (int j = 0; j < 4; j++) {
+                        char hexChar = input[pos++];
+                        int digit = hexToDigit(hexChar);
+                        if (digit < 0) {
+                            throw new JhonParseException("Invalid Unicode escape sequence", pos - 4);
+                        }
+                        codePoint = (codePoint << 4) | digit;
                     }
+                    yield (char) codePoint;
                 }
-                default:
-                    return c;
-            }
+                default -> c;
+            };
         }
 
         List<Object> parseArray() throws JhonParseException {
-            if (pos >= len || input.charAt(pos) != '[') {
+            if (pos >= end || input[pos] != '[') {
                 throw new JhonParseException("Expected '['", pos);
             }
             pos++;
@@ -407,7 +421,7 @@ public class Jhon {
             List<Object> elements = new ArrayList<>();
             boolean isFirst = true;
 
-            while (pos < len) {
+            while (pos < end) {
                 if (!isFirst) {
                     if (!peekSeparator(']')) {
                         throw new JhonParseException("Expected comma or newline between array elements", pos);
@@ -417,11 +431,11 @@ public class Jhon {
 
                 skipSpacesAndTabs();
 
-                if (pos >= len) {
+                if (pos >= end) {
                     throw new JhonParseException("Unterminated array", pos);
                 }
 
-                if (input.charAt(pos) == ']') {
+                if (input[pos] == ']') {
                     pos++;
                     return elements;
                 }
@@ -434,71 +448,90 @@ public class Jhon {
         }
 
         Number parseNumber() throws JhonParseException {
-            int start = pos;
-
             // Optional minus
-            if (pos < len && input.charAt(pos) == '-') {
+            boolean negative = false;
+            if (pos < end && input[pos] == '-') {
+                negative = true;
                 pos++;
             }
 
-            // Digits before decimal
+            // Parse digits before decimal
+            long intValue = 0;
             boolean hasDigits = false;
-            while (pos < len && (Character.isDigit(input.charAt(pos)) || input.charAt(pos) == '_')) {
-                if (input.charAt(pos) != '_') {
-                    hasDigits = true;
-                }
+            while (pos < end && isDigit(input[pos])) {
+                hasDigits = true;
+                intValue = intValue * 10 + (input[pos] - '0');
                 pos++;
+            }
+
+            // Skip underscores
+            while (pos < end && input[pos] == '_') {
+                pos++;
+                while (pos < end && isDigit(input[pos])) {
+                    intValue = intValue * 10 + (input[pos] - '0');
+                    pos++;
+                }
             }
 
             if (!hasDigits) {
                 throw new JhonParseException("Invalid number", pos);
             }
 
-            // Optional decimal
-            if (pos < len && input.charAt(pos) == '.') {
+            // Check for decimal part
+            if (pos < end && input[pos] == '.') {
                 pos++;
+
+                // Parse decimal digits
+                double decimalValue = intValue;
+                double factor = 0.1;
                 boolean hasDecimalDigits = false;
-                while (pos < len && (Character.isDigit(input.charAt(pos)) || input.charAt(pos) == '_')) {
-                    if (input.charAt(pos) != '_') {
-                        hasDecimalDigits = true;
-                    }
+
+                while (pos < end && isDigit(input[pos])) {
+                    hasDecimalDigits = true;
+                    decimalValue += (input[pos] - '0') * factor;
+                    factor /= 10;
                     pos++;
                 }
+
+                // Skip underscores in decimal
+                while (pos < end && input[pos] == '_') {
+                    pos++;
+                    while (pos < end && isDigit(input[pos])) {
+                        hasDecimalDigits = true;
+                        decimalValue += (input[pos] - '0') * factor;
+                        factor /= 10;
+                        pos++;
+                    }
+                }
+
                 if (!hasDecimalDigits) {
                     throw new JhonParseException("Invalid decimal number", pos);
                 }
+
+                return negative ? -decimalValue : decimalValue;
             }
 
-            String numStr = input.substring(start, pos).replace("_", "");
-            try {
-                if (numStr.contains(".")) {
-                    return Double.parseDouble(numStr);
-                } else {
-                    long value = Long.parseLong(numStr);
-                    if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE) {
-                        return (int) value;
-                    }
-                    return value;
-                }
-            } catch (NumberFormatException e) {
-                throw new JhonParseException("Could not parse number", pos);
+            if (negative) {
+                intValue = -intValue;
             }
+
+            // Return as int if in range, otherwise long
+            if (intValue >= Integer.MIN_VALUE && intValue <= Integer.MAX_VALUE) {
+                return (int) intValue;
+            }
+            return intValue;
         }
 
         Boolean parseBoolean() throws JhonParseException {
-            if (pos + 3 < len &&
-                    input.charAt(pos) == 't' &&
-                    input.charAt(pos + 1) == 'r' &&
-                    input.charAt(pos + 2) == 'u' &&
-                    input.charAt(pos + 3) == 'e') {
+            if (pos + 3 < end &&
+                    input[pos] == 't' && input[pos + 1] == 'r' &&
+                    input[pos + 2] == 'u' && input[pos + 3] == 'e') {
                 pos += 4;
                 return true;
-            } else if (pos + 4 < len &&
-                    input.charAt(pos) == 'f' &&
-                    input.charAt(pos + 1) == 'a' &&
-                    input.charAt(pos + 2) == 'l' &&
-                    input.charAt(pos + 3) == 's' &&
-                    input.charAt(pos + 4) == 'e') {
+            } else if (pos + 4 < end &&
+                    input[pos] == 'f' && input[pos + 1] == 'a' &&
+                    input[pos + 2] == 'l' && input[pos + 3] == 's' &&
+                    input[pos + 4] == 'e') {
                 pos += 5;
                 return false;
             }
@@ -507,11 +540,9 @@ public class Jhon {
         }
 
         Object parseNull() throws JhonParseException {
-            if (pos + 3 < len &&
-                    input.charAt(pos) == 'n' &&
-                    input.charAt(pos + 1) == 'u' &&
-                    input.charAt(pos + 2) == 'l' &&
-                    input.charAt(pos + 3) == 'l') {
+            if (pos + 3 < end &&
+                    input[pos] == 'n' && input[pos + 1] == 'u' &&
+                    input[pos + 2] == 'l' && input[pos + 3] == 'l') {
                 pos += 4;
                 return null;
             }
@@ -520,8 +551,8 @@ public class Jhon {
         }
 
         void skipSeparators() {
-            while (pos < len) {
-                char c = input.charAt(pos);
+            while (pos < end) {
+                char c = input[pos];
                 if (c == '\n' || c == ',') {
                     pos++;
                 } else {
@@ -534,8 +565,8 @@ public class Jhon {
             int tempPos = pos;
             boolean foundSpace = false;
 
-            while (tempPos < len) {
-                char c = input.charAt(tempPos);
+            while (tempPos < end) {
+                char c = input[tempPos];
                 if (c == ' ' || c == '\t') {
                     tempPos++;
                     foundSpace = true;
@@ -554,14 +585,14 @@ public class Jhon {
         }
 
         void skipWhitespace() {
-            while (pos < len && isWhitespace(input.charAt(pos))) {
+            while (pos < end && isWhitespace(input[pos])) {
                 pos++;
             }
         }
 
         void skipSpacesAndTabs() {
-            while (pos < len) {
-                char c = input.charAt(pos);
+            while (pos < end) {
+                char c = input[pos];
                 if (c == ' ' || c == '\t') {
                     pos++;
                 } else {
@@ -570,229 +601,344 @@ public class Jhon {
             }
         }
 
-        boolean isWhitespace(char c) {
-            return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-        }
+        // Helper to unescape a string (only used when escapes were detected)
+        private String unescapeString(String s, char[] input, int quoteStart, int quoteEnd) {
+            // Simple check - if no backslash in string, no unescaping needed
+            for (int i = 0; i < s.length(); i++) {
+                if (s.charAt(i) == '\\') {
+                    // Need to unescape - use StringBuilder
+                    StringBuilder sb = new StringBuilder(s.length());
+                    int srcPos = quoteStart + 1; // After opening quote
 
-        boolean isUnquotedKeyChar(char c) {
-            return Character.isLetterOrDigit(c) || c == '_' || c == '-';
+                    while (srcPos < quoteEnd - 1) {
+                        if (input[srcPos] == '\\' && srcPos + 1 < quoteEnd) {
+                            srcPos++;
+                            char esc = input[srcPos++];
+                            sb.append(switch (esc) {
+                                case 'n' -> '\n';
+                                case 'r' -> '\r';
+                                case 't' -> '\t';
+                                case 'b' -> '\b';
+                                case 'f' -> '\f';
+                                case '\\', '"', '\'' -> esc;
+                                default -> esc;
+                            });
+                        } else {
+                            sb.append(input[srcPos++]);
+                        }
+                    }
+                    return sb.toString();
+                }
+            }
+            return s;
         }
     }
 
     // =============================================================================
-    // Serializer Class
+    // Serializer (Optimized with StringBuilder)
     // =============================================================================
 
-    static class Serializer {
-
-        String serializeCompact(Object value) {
-            if (value == null) {
-                return "null";
-            } else if (value instanceof String) {
-                return serializeString((String) value);
-            } else if (value instanceof Number) {
-                return serializeNumber((Number) value);
-            } else if (value instanceof Boolean) {
-                return (Boolean) value ? "true" : "false";
-            } else if (value instanceof List) {
-                return serializeArrayCompact((List<?>) value);
-            } else if (value instanceof Map) {
-                return serializeObjectCompact((Map<?, ?>) value);
-            }
+    private static void serializeCompact(Object value, StringBuilder sb) {
+        if (value == null) {
+            sb.append("null");
+        } else if (value instanceof String) {
+            serializeString((String) value, sb);
+        } else if (value instanceof Number) {
+            serializeNumber((Number) value, sb);
+        } else if (value instanceof Boolean) {
+            sb.append((Boolean) value ? "true" : "false");
+        } else if (value instanceof List) {
+            serializeArrayCompact((List<?>) value, sb);
+        } else if (value instanceof Map) {
+            serializeObjectCompact((Map<?, ?>) value, sb);
+        } else {
             throw new IllegalArgumentException("Cannot serialize value: " + value);
         }
+    }
 
-        String serializeObjectCompact(Map<?, ?> obj) {
-            if (obj.isEmpty()) {
-                return "";
+    private static void serializeObjectCompact(Map<?, ?> obj, StringBuilder sb) {
+        if (obj.isEmpty()) {
+            return;
+        }
+
+        // Get and sort keys
+        String[] keys = new String[obj.size()];
+        int i = 0;
+        for (Object key : obj.keySet()) {
+            keys[i++] = key.toString();
+        }
+        Arrays.sort(keys);
+
+        boolean first = true;
+        for (String key : keys) {
+            if (!first) {
+                sb.append(',');
             }
+            first = false;
 
-            List<String> sortedKeys = new ArrayList<>(obj.keySet().size());
-            for (Object key : obj.keySet()) {
-                sortedKeys.add(key.toString());
+            // Write key
+            serializeKey(key, sb);
+            sb.append('=');
+
+            // Write value
+            Object v = obj.get(key);
+            if (v instanceof Map) {
+                Map<?, ?> nestedObj = (Map<?, ?>) v;
+                sb.append('{');
+                if (!nestedObj.isEmpty()) {
+                    serializeObjectCompact(nestedObj, sb);
+                }
+                sb.append('}');
+            } else {
+                serializeCompact(v, sb);
             }
-            Collections.sort(sortedKeys);
+        }
+    }
 
-            List<String> parts = new ArrayList<>();
-            for (String key : sortedKeys) {
-                String serializedKey = serializeKey(key);
-                Object value = obj.get(key);
-                String serializedValue;
+    private static void serializeArrayCompact(List<?> arr, StringBuilder sb) {
+        if (arr.isEmpty()) {
+            sb.append("[]");
+            return;
+        }
 
-                if (value instanceof Map) {
-                    Map<?, ?> nestedObj = (Map<?, ?>) value;
-                    if (nestedObj.isEmpty()) {
-                        serializedValue = "{}";
+        sb.append('[');
+        boolean first = true;
+        for (Object v : arr) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+
+            if (v instanceof Map) {
+                Map<?, ?> obj = (Map<?, ?>) v;
+                sb.append('{');
+                if (!obj.isEmpty()) {
+                    serializeObjectCompact(obj, sb);
+                }
+                sb.append('}');
+            } else {
+                serializeCompact(v, sb);
+            }
+        }
+        sb.append(']');
+    }
+
+    private static void serializeKey(String key, StringBuilder sb) {
+        if (needsQuoting(key)) {
+            serializeString(key, sb);
+        } else {
+            sb.append(key);
+        }
+    }
+
+    private static void serializeString(String s, StringBuilder sb) {
+        sb.append('"');
+
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                default -> {
+                    if (c < ' ') {
+                        sb.append("\\u");
+                        appendHex(c, sb);
                     } else {
-                        serializedValue = "{" + serializeObjectCompact(nestedObj) + "}";
-                    }
-                } else {
-                    serializedValue = serializeCompact(value);
-                }
-
-                parts.add(serializedKey + "=" + serializedValue);
-            }
-
-            return String.join(",", parts);
-        }
-
-        String serializeArrayCompact(List<?> arr) {
-            if (arr.isEmpty()) {
-                return "[]";
-            }
-
-            List<String> elements = new ArrayList<>();
-            for (Object v : arr) {
-                if (v instanceof Map) {
-                    Map<?, ?> obj = (Map<?, ?>) v;
-                    if (obj.isEmpty()) {
-                        elements.add("{}");
-                    } else {
-                        elements.add("{" + serializeObjectCompact(obj) + "}");
-                    }
-                } else {
-                    elements.add(serializeCompact(v));
-                }
-            }
-
-            return "[" + String.join(",", elements) + "]";
-        }
-
-        String serializeKey(String key) {
-            if (needsQuoting(key)) {
-                return serializeString(key);
-            }
-            return key;
-        }
-
-        String serializeString(String s) {
-            StringBuilder result = new StringBuilder();
-            result.append('"');
-
-            for (int i = 0; i < s.length(); i++) {
-                char c = s.charAt(i);
-                switch (c) {
-                    case '\\' -> result.append("\\\\");
-                    case '"' -> result.append("\\\"");
-                    case '\n' -> result.append("\\n");
-                    case '\r' -> result.append("\\r");
-                    case '\t' -> result.append("\\t");
-                    case '\b' -> result.append("\\b");
-                    case '\f' -> result.append("\\f");
-                    default -> {
-                        if (c < ' ') {
-                            result.append(String.format("\\u%04x", (int) c));
-                        } else {
-                            result.append(c);
-                        }
+                        sb.append(c);
                     }
                 }
             }
-
-            result.append('"');
-            return result.toString();
         }
 
-        String serializeNumber(Number n) {
-            if (n instanceof Integer || n instanceof Long) {
-                return n.toString();
-            }
+        sb.append('"');
+    }
+
+    private static void serializeNumber(Number n, StringBuilder sb) {
+        if (n instanceof Integer || n instanceof Long) {
+            sb.append(n.longValue());
+        } else if (n instanceof Float || n instanceof Double) {
             double d = n.doubleValue();
             if (d == (long) d) {
-                return String.format("%.0f", d);
+                sb.append((long) d);
+            } else {
+                sb.append(d);
             }
-            return Double.toString(d);
+        } else {
+            double d = n.doubleValue();
+            if (d == (long) d) {
+                sb.append((long) d);
+            } else {
+                sb.append(d);
+            }
         }
+    }
 
-        String serializePretty(Object value, String indent, int depth, boolean inArray) {
-            if (value == null) {
-                return "null";
-            } else if (value instanceof String) {
-                return serializeString((String) value);
-            } else if (value instanceof Number) {
-                return serializeNumber((Number) value);
-            } else if (value instanceof Boolean) {
-                return (Boolean) value ? "true" : "false";
-            } else if (value instanceof List) {
-                return serializeArrayPretty((List<?>) value, indent, depth);
-            } else if (value instanceof Map) {
-                return serializeObjectPretty((Map<?, ?>) value, indent, depth, inArray);
-            }
+    private static void appendHex(char c, StringBuilder sb) {
+        String hex = Integer.toHexString(c);
+        for (int i = 0; i < 4 - hex.length(); i++) {
+            sb.append('0');
+        }
+        sb.append(hex);
+    }
+
+    private static String serializePretty(Object value, String indent, int depth, boolean inArray) {
+        StringBuilder sb = new StringBuilder();
+        serializePrettyValue(value, indent, depth, inArray, sb);
+        return sb.toString();
+    }
+
+    private static void serializePrettyValue(Object value, String indent, int depth, boolean inArray, StringBuilder sb) {
+        if (value == null) {
+            sb.append("null");
+        } else if (value instanceof String) {
+            serializeString((String) value, sb);
+        } else if (value instanceof Number) {
+            serializeNumber((Number) value, sb);
+        } else if (value instanceof Boolean) {
+            sb.append((Boolean) value ? "true" : "false");
+        } else if (value instanceof List) {
+            serializeArrayPretty((List<?>) value, indent, depth, sb);
+        } else if (value instanceof Map) {
+            serializeObjectPretty((Map<?, ?>) value, indent, depth, inArray, sb);
+        } else {
             throw new IllegalArgumentException("Cannot serialize value: " + value);
         }
+    }
 
-        String serializeObjectPretty(Map<?, ?> obj, String indent, int depth, boolean inArray) {
-            if (obj.isEmpty()) {
-                return "";
+    private static void serializeObjectPretty(Map<?, ?> obj, String indent, int depth, boolean inArray, StringBuilder sb) {
+        if (obj.isEmpty()) {
+            sb.append("{}");
+            return;
+        }
+
+        // Get and sort keys
+        String[] keys = new String[obj.size()];
+        int idx = 0;
+        for (Object key : obj.keySet()) {
+            keys[idx++] = key.toString();
+        }
+        Arrays.sort(keys);
+
+        // Add opening brace
+        if (inArray) {
+            String braceIndent = repeat(indent, depth + 1);
+            sb.append(braceIndent).append("{\n");
+        } else if (depth > 0) {
+            sb.append("{\n");
+        }
+
+        boolean first = true;
+        for (String key : keys) {
+            if (!first) {
+                sb.append(",\n");
             }
+            first = false;
 
-            List<String> sortedKeys = new ArrayList<>(obj.keySet().size());
-            for (Object key : obj.keySet()) {
-                sortedKeys.add(key.toString());
-            }
-            Collections.sort(sortedKeys);
-
-            List<String> parts = new ArrayList<>();
-            for (String key : sortedKeys) {
-                String serializedKey = serializeKey(key);
-                String serializedValue = serializePretty(obj.get(key), indent, depth + 1, false);
-
-                String innerIndent;
-                if (inArray) {
-                    innerIndent = indent.repeat(depth + 2);
-                    parts.add(innerIndent + serializedKey + " = " + serializedValue);
-                } else if (depth == 0) {
-                    parts.add(serializedKey + " = " + serializedValue);
-                } else {
-                    innerIndent = indent.repeat(depth);
-                    parts.add(innerIndent + serializedKey + " = " + serializedValue);
-                }
-            }
-
+            String innerIndent;
             if (inArray) {
-                String braceIndent = indent.repeat(depth + 1);
-                return braceIndent + "{\n" + String.join(",\n", parts) + "\n" + braceIndent + "}";
+                innerIndent = repeat(indent, depth + 2);
             } else if (depth == 0) {
-                return String.join(",\n", parts);
+                innerIndent = "";
             } else {
-                String outerIndent = indent.repeat(depth - 1);
-                return "{\n" + String.join(",\n", parts) + "\n" + outerIndent + "}";
+                innerIndent = repeat(indent, depth);
             }
+
+            sb.append(innerIndent);
+            serializeKey(key, sb);
+            sb.append(" = ");
+            serializePrettyValue(obj.get(key), indent, depth + 1, false, sb);
         }
 
-        String serializeArrayPretty(List<?> arr, String indent, int depth) {
-            if (arr.isEmpty()) {
-                return "[]";
-            }
+        // Add closing brace
+        if (inArray) {
+            String braceIndent = repeat(indent, depth + 1);
+            sb.append("\n").append(braceIndent).append("}");
+        } else if (depth > 0) {
+            String outerIndent = repeat(indent, depth - 1);
+            sb.append("\n").append(outerIndent).append("}");
+        }
+    }
 
-            String outerIndent = depth > 0 ? indent.repeat(depth - 1) : "";
-
-            List<String> elements = new ArrayList<>();
-            for (Object v : arr) {
-                if (v instanceof Map) {
-                    int objectDepth = Math.max(0, depth - 1);
-                    elements.add(serializePretty(v, indent, objectDepth, true));
-                } else {
-                    String elementIndent = depth == 0 ? indent : indent.repeat(depth);
-                    String serialized = serializePretty(v, indent, depth + 1, false);
-                    elements.add(elementIndent + serialized);
-                }
-            }
-
-            return "[\n" + String.join(",\n", elements) + "\n" + outerIndent + "]";
+    private static void serializeArrayPretty(List<?> arr, String indent, int depth, StringBuilder sb) {
+        if (arr.isEmpty()) {
+            sb.append("[]");
+            return;
         }
 
-        boolean needsQuoting(String s) {
-            if (s.isEmpty()) {
+        sb.append("[\n");
+        String outerIndent = repeat(indent, depth);
+
+        boolean first = true;
+        for (Object v : arr) {
+            if (!first) {
+                sb.append(",\n");
+            }
+            first = false;
+
+            if (v instanceof Map) {
+                int objectDepth = Math.max(0, depth);
+                serializeObjectPretty((Map<?, ?>) v, indent, objectDepth, true, sb);
+            } else {
+                String elementIndent = repeat(indent, depth + 1);
+                sb.append(elementIndent);
+                serializePrettyValue(v, indent, depth + 1, false, sb);
+            }
+        }
+        sb.append("\n").append(outerIndent).append("]");
+    }
+
+    private static String repeat(String s, int count) {
+        if (count <= 0) return "";
+        if (count == 1) return s;
+
+        StringBuilder sb = new StringBuilder(s.length() * count);
+        for (int i = 0; i < count; i++) {
+            sb.append(s);
+        }
+        return sb.toString();
+    }
+
+    private static boolean needsQuoting(String s) {
+        if (s.isEmpty()) {
+            return true;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+                !(c >= '0' && c <= '9') && c != '_' && c != '-') {
                 return true;
             }
-            for (char c : s.toCharArray()) {
-                if (!Character.isLetterOrDigit(c) && c != '_' && c != '-') {
-                    return true;
-                }
-            }
-            return false;
         }
+        return false;
+    }
+
+    // =============================================================================
+    // Utility Methods
+    // =============================================================================
+
+    private static boolean isWhitespace(char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    private static boolean isUnquotedKeyChar(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_' || c == '-';
+    }
+
+    private static boolean isDigit(char c) {
+        return c >= '0' && c <= '9';
+    }
+
+    private static int hexToDigit(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
     }
 
     // =============================================================================

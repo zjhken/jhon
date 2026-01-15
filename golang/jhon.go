@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -667,26 +668,30 @@ func serializeObjectCompact(obj Object) string {
 	for k := range obj {
 		keys = append(keys, k)
 	}
-	sortStrings(keys)
+	sort.Strings(keys)
 
-	var parts []string
+	// Estimate capacity: avg key (10) + "=" (1) + avg value (20) + "," (1) per entry
+	estimatedSize := len(obj) * 32
+	var buf strings.Builder
+	buf.Grow(estimatedSize)
+
+	first := true
 	for _, key := range keys {
-		serializedKey := serializeKey(key)
-		value := obj[key]
-		var serializedValue string
-		if nestedObj, ok := value.(Object); ok {
-			if len(nestedObj) == 0 {
-				serializedValue = "{}"
-			} else {
-				serializedValue = "{" + serializeObjectCompact(nestedObj) + "}"
-			}
-		} else {
-			serializedValue = serializeCompact(value)
+		if !first {
+			buf.WriteByte(',')
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s", serializedKey, serializedValue))
+		first = false
+
+		// Write key
+		writeKeyCompact(&buf, key)
+
+		buf.WriteByte('=')
+
+		// Write value
+		writeValueCompact(&buf, obj[key])
 	}
 
-	return strings.Join(parts, ",")
+	return buf.String()
 }
 
 // serializeArrayCompact serializes an array in compact format
@@ -695,20 +700,32 @@ func serializeArrayCompact(arr Array) string {
 		return "[]"
 	}
 
-	var elements []string
+	// Estimate capacity: avg element (15) + "," (1) per element + brackets (2)
+	estimatedSize := len(arr)*16 + 2
+	var buf strings.Builder
+	buf.Grow(estimatedSize)
+
+	buf.WriteByte('[')
+	first := true
 	for _, v := range arr {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+
 		if obj, ok := v.(Object); ok {
-			if len(obj) == 0 {
-				elements = append(elements, "{}")
-			} else {
-				elements = append(elements, "{"+serializeObjectCompact(obj)+"}")
+			buf.WriteByte('{')
+			if len(obj) > 0 {
+				buf.WriteString(serializeObjectCompact(obj))
 			}
+			buf.WriteByte('}')
 		} else {
-			elements = append(elements, serializeCompact(v))
+			writeValueCompact(&buf, v)
 		}
 	}
+	buf.WriteByte(']')
 
-	return "[" + strings.Join(elements, ",") + "]"
+	return buf.String()
 }
 
 // serializeKey serializes a key (quotes if necessary)
@@ -760,6 +777,114 @@ func serializeFloat(f float64) string {
 		return fmt.Sprintf("%.0f", f)
 	}
 	return fmt.Sprintf("%g", f)
+}
+
+// =============================================================================
+// Optimized serialization helpers (write directly to strings.Builder)
+// =============================================================================
+
+// writeKeyCompact writes a key to the buffer, quoting if necessary
+func writeKeyCompact(buf *strings.Builder, key string) {
+	if needsQuoting(key) {
+		buf.WriteByte('"')
+		for _, c := range key {
+			switch c {
+			case '\\':
+				buf.WriteString("\\\\")
+			case '"':
+				buf.WriteString("\\\"")
+			default:
+				buf.WriteRune(c)
+			}
+		}
+		buf.WriteByte('"')
+	} else {
+		buf.WriteString(key)
+	}
+}
+
+// writeValueCompact writes a value to the buffer in compact format
+func writeValueCompact(buf *strings.Builder, v Value) {
+	switch val := v.(type) {
+	case Object:
+		buf.WriteByte('{')
+		if len(val) > 0 {
+			buf.WriteString(serializeObjectCompact(val))
+		}
+		buf.WriteByte('}')
+	case Array:
+		writeArrayCompact(buf, val)
+	case string:
+		buf.WriteByte('"')
+		for _, c := range val {
+			switch c {
+			case '\\':
+				buf.WriteString("\\\\")
+			case '"':
+				buf.WriteString("\\\"")
+			case '\n':
+				buf.WriteString("\\n")
+			case '\r':
+				buf.WriteString("\\r")
+			case '\t':
+				buf.WriteString("\\t")
+			case '\b':
+				buf.WriteString("\\b")
+			case '\f':
+				buf.WriteString("\\f")
+			default:
+				if c < ' ' {
+					buf.WriteString(fmt.Sprintf("\\u%04x", c))
+				} else {
+					buf.WriteRune(c)
+				}
+			}
+		}
+		buf.WriteByte('"')
+	case float64:
+		// Optimized float serialization
+		if val == float64(int64(val)) {
+			buf.WriteString(strconv.FormatInt(int64(val), 10))
+		} else {
+			buf.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
+		}
+	case bool:
+		if val {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case nil:
+		buf.WriteString("null")
+	case int:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case int64:
+		buf.WriteString(strconv.FormatInt(val, 10))
+	case int32:
+		buf.WriteString(strconv.FormatInt(int64(val), 10))
+	case uint:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	case uint64:
+		buf.WriteString(strconv.FormatUint(val, 10))
+	case uint32:
+		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+	default:
+		buf.WriteString(fmt.Sprintf("%v", val))
+	}
+}
+
+// writeArrayCompact writes an array to the buffer in compact format
+func writeArrayCompact(buf *strings.Builder, arr Array) {
+	buf.WriteByte('[')
+	first := true
+	for _, v := range arr {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		writeValueCompact(buf, v)
+	}
+	buf.WriteByte(']')
 }
 
 // serializePretty serializes a value with pretty formatting
@@ -880,16 +1005,10 @@ func needsQuoting(s string) bool {
 	return false
 }
 
+// sortStrings is now using stdlib sort.Strings
+// Kept as an alias for compatibility, but no longer needed
 func sortStrings(slice []string) {
-	// Simple bubble sort for dependency-free sorting
-	n := len(slice)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if slice[j] > slice[j+1] {
-				slice[j], slice[j+1] = slice[j+1], slice[j]
-			}
-		}
-	}
+	sort.Strings(slice)
 }
 
 // =============================================================================
