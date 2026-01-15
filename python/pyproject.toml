@@ -1,0 +1,25 @@
+[project]
+name = "jhon"
+version = "1.0.0"
+description = "JHON - JinHui's Object Notation: A configuration language parser and serializer"
+readme = "README.md"
+authors = [
+    { name = "Jinhui ZHANG", email = "zjhken@outlook.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+
+[build-system]
+requires = ["hatchling>=1.0.0"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = ["pytest>=7.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+pythonpath = ["."]
+addopts = "-v"
