@@ -67,7 +67,7 @@ pub fn serialize_pretty(value: &Value, indent: &str) -> String {
 }
 
 // =============================================================================
-// Static Escape Table (from serde_json)
+// Static Tables (from serde_json)
 // =============================================================================
 
 const BB: u8 = b'b';   // \\x08
@@ -102,6 +102,70 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
 ];
 
+// Classification table for fast character checking
+// Bits: 0x01 = whitespace, 0x02 = digit, 0x04 = identifier char, 0x08 = structural
+static CLASSIFICATION: [u8; 256] = {
+    const C: u8 = 0; // normal character
+    const W: u8 = 0x01; // whitespace
+    const D: u8 = 0x02; // digit
+    const I: u8 = 0x04; // identifier (alphanumeric, underscore, hyphen)
+    const S: u8 = 0x08; // structural (=, {, }, [, ], ", ', ',')
+    let mut table = [C; 256];
+    // Whitespace
+    table[b'\t' as usize] = W;
+    table[b'\n' as usize] = W;
+    table[b'\r' as usize] = W;
+    table[b' ' as usize] = W;
+    // Digits
+    let mut i = b'0';
+    while i <= b'9' {
+        table[i as usize] = D | I;
+        i += 1;
+    }
+    // Letters (identifier)
+    let mut i = b'a';
+    while i <= b'z' {
+        table[i as usize] = I;
+        table[(i - 32) as usize] = I; // uppercase
+        i += 1;
+    }
+    // Identifier chars
+    table[b'_' as usize] = I;
+    table[b'-' as usize] = I;
+    // Structural
+    table[b'=' as usize] = S;
+    table[b'{' as usize] = S;
+    table[b'}' as usize] = S;
+    table[b'[' as usize] = S;
+    table[b']' as usize] = S;
+    table[b'"' as usize] = S;
+    table[b'\'' as usize] = S;
+    table[b',' as usize] = S;
+    table[b'#' as usize] = S;
+    table
+};
+
+// Inline hints for hot paths
+#[inline(always)]
+fn is_whitespace(b: u8) -> bool {
+    CLASSIFICATION[b as usize] & 0x01 != 0
+}
+
+#[inline(always)]
+fn is_digit(b: u8) -> bool {
+    CLASSIFICATION[b as usize] & 0x02 != 0
+}
+
+#[inline(always)]
+fn is_identifier_char(b: u8) -> bool {
+    CLASSIFICATION[b as usize] & 0x04 != 0
+}
+
+#[inline(always)]
+fn is_structural(b: u8) -> bool {
+    CLASSIFICATION[b as usize] & 0x08 != 0
+}
+
 // =============================================================================
 // Optimized Parser
 // =============================================================================
@@ -133,18 +197,47 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Skip all whitespace using SIMD-like byte scanning
     fn skip_whitespace(&mut self) {
-        while let Some(&b) = self.input.get(self.pos) {
-            if b.is_ascii_whitespace() {
-                self.pos += 1;
-            } else {
+        // Process 8 bytes at a time
+        while self.pos + 8 <= self.input.len() {
+            let chunk = u64::from_le_bytes([
+                self.input[self.pos],
+                self.input[self.pos + 1],
+                self.input[self.pos + 2],
+                self.input[self.pos + 3],
+                self.input[self.pos + 4],
+                self.input[self.pos + 5],
+                self.input[self.pos + 6],
+                self.input[self.pos + 7],
+            ]);
+
+            // Check if any byte is NOT whitespace
+            // Whitespace: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D)
+            // We use a trick: subtract 1 and check overflow to detect ranges
+            let has_non_ws = {
+                // For space (0x20): subtract 0x20, values < 0xE0 for whitespace
+                // For tab/newline/CR (0x09-0x0D): subtract 1, values < 0x0D for range 0x01-0x0D
+                // This is a simplified version - we check each byte
+                let bytes = chunk.to_le_bytes();
+                !bytes.iter().all(|&b| is_whitespace(b))
+            };
+
+            if has_non_ws {
                 break;
             }
+            self.pos += 8;
+        }
+
+        // Handle remaining bytes
+        while self.pos < self.input.len() && is_whitespace(self.input[self.pos]) {
+            self.pos += 1;
         }
     }
 
     fn skip_spaces_and_tabs(&mut self) {
-        while let Some(&b) = self.input.get(self.pos) {
+        while self.pos < self.input.len() {
+            let b = self.input[self.pos];
             if b == b' ' || b == b'\t' {
                 self.pos += 1;
             } else {
@@ -153,13 +246,59 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // Optimized string parsing with fast byte scanning
     fn parse_string(&mut self, quote: u8) -> Result<String> {
         self.advance(); // skip opening quote
 
         let start = self.pos;
-        let mut has_escape = false;
 
-        // Fast path: check for escapes
+        // Fast path: scan for quote or escape using byte chunks
+        while self.pos + 8 <= self.input.len() {
+            let chunk = u64::from_le_bytes([
+                self.input[self.pos],
+                self.input[self.pos + 1],
+                self.input[self.pos + 2],
+                self.input[self.pos + 3],
+                self.input[self.pos + 4],
+                self.input[self.pos + 5],
+                self.input[self.pos + 6],
+                self.input[self.pos + 7],
+            ]);
+
+            // Check for quote or backslash in chunk
+            // We use XOR to find bytes matching quote or backslash
+            let diff_quote = chunk ^ u64::from_le_bytes([quote; 8]);
+            let diff_bs = chunk ^ u64::from_le_bytes([b'\\'; 8]);
+
+            // If either has a zero byte, we found a match
+            if (diff_quote.wrapping_sub(0x0101010101010101) & !diff_quote & 0x8080808080808080) != 0
+                || (diff_bs.wrapping_sub(0x0101010101010101) & !diff_bs & 0x8080808080808080) != 0
+            {
+                // Found quote or escape, check byte by byte
+                let end = self.pos + 8;
+                while self.pos < end {
+                    let b = self.input[self.pos];
+                    if b == quote {
+                        let s = unsafe {
+                            std::str::from_utf8_unchecked(&self.input[start..self.pos])
+                        };
+                        self.pos += 1;
+                        return Ok(s.to_string());
+                    }
+                    if b == b'\\' {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                if self.input[self.pos] == b'\\' {
+                    break;
+                }
+            }
+            self.pos += 8;
+        }
+
+        // Handle remaining bytes byte-by-byte
+        let mut has_escape = false;
         while self.pos < self.input.len() {
             let b = self.input[self.pos];
             if b == quote {
@@ -268,22 +407,35 @@ impl<'a> Parser<'a> {
         Err(anyhow!("Unterminated raw string"))
     }
 
+    // Optimized number parsing - avoids intermediate string allocation
     fn parse_number(&mut self) -> Result<Value> {
         let start = self.pos;
-
-        // Optional minus
-        if self.current() == Some(b'-') {
+        let sign = if self.current() == Some(b'-') {
             self.advance();
-        }
+            -1i64
+        } else {
+            1i64
+        };
 
-        // Digits before decimal
+        // Parse integer part directly
+        let mut value: u64 = 0;
         let mut has_digits = false;
-        while let Some(&b) = self.input.get(self.pos) {
-            if b.is_ascii_digit() {
-                has_digits = true;
+        let mut has_underscore = false;
+
+        while self.pos < self.input.len() {
+            let b = self.input[self.pos];
+            if is_digit(b) {
+                // Check for overflow
+                if value > (u64::MAX / 10) {
+                    // Too large, fall back to string parsing
+                    return self.parse_number_slow(start);
+                }
+                value = value.wrapping_mul(10).wrapping_add((b - b'0') as u64);
                 self.pos += 1;
+                has_digits = true;
             } else if b == b'_' {
                 self.pos += 1;
+                has_underscore = true;
             } else {
                 break;
             }
@@ -293,25 +445,41 @@ impl<'a> Parser<'a> {
             return Err(anyhow!("Invalid number"));
         }
 
-        // Optional decimal part
+        // Check for decimal point
         if self.current() == Some(b'.') {
-            self.pos += 1;
-            has_digits = false;
+            // Need to parse as float - use string parsing for accuracy
+            return self.parse_number_slow(start);
+        }
 
-            while let Some(&b) = self.input.get(self.pos) {
-                if b.is_ascii_digit() {
-                    has_digits = true;
-                    self.pos += 1;
-                } else if b == b'_' {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
+        // Apply sign
+        let value = if sign < 0 {
+            value.wrapping_neg()
+        } else {
+            value
+        } as i64;
 
-            if !has_digits {
-                return Err(anyhow!("Invalid decimal number"));
+        Ok(Value::Number(Number::from(value)))
+    }
+
+    // Fallback: parse number using string (for floats or overflow cases)
+    fn parse_number_slow(&mut self, start: usize) -> Result<Value> {
+        // Continue parsing to end of number
+        let mut has_digits = false;
+
+        while self.pos < self.input.len() {
+            let b = self.input[self.pos];
+            if is_digit(b) {
+                has_digits = true;
+                self.pos += 1;
+            } else if b == b'_' || b == b'.' || b == b'e' || b == b'E' || b == b'+' || b == b'-' {
+                self.pos += 1;
+            } else {
+                break;
             }
+        }
+
+        if !has_digits {
+            return Err(anyhow!("Invalid number"));
         }
 
         // Parse the number without underscores
@@ -408,23 +576,20 @@ impl<'a> Parser<'a> {
         if quote == Some(b'"') || quote == Some(b'\'') {
             self.parse_string(quote.unwrap())
         } else {
-            // Unquoted key
+            // Unquoted key - use optimized identifier char check
             let start = self.pos;
-            while let Some(&b) = self.input.get(self.pos) {
-                if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
+            while self.pos < self.input.len() && is_identifier_char(self.input[self.pos]) {
+                self.pos += 1;
             }
 
             if start == self.pos {
                 return Err(anyhow!("Empty key"));
             }
 
-            std::str::from_utf8(&self.input[start..self.pos])
-                .map(|s| s.to_string())
-                .map_err(|_| anyhow!("Invalid UTF-8 in key"))
+            unsafe {
+                // Safety: we verified all characters are ASCII alphanumeric/underscore/hyphen
+                Ok(std::str::from_utf8_unchecked(&self.input[start..self.pos]).to_string())
+            }
         }
     }
 
