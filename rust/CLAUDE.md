@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Jhon is a Rust library project (edition 2024) in early development. It's currently a minimal starter template with basic arithmetic functionality.
+JHON (JinHui's Object Notation) is a configuration language parser and serializer library in Rust (edition 2024). It provides a simpler alternative to JSON with support for comments, raw strings, and numbers with underscores.
 
 ## Development Commands
 
@@ -12,7 +12,7 @@ Jhon is a Rust library project (edition 2024) in early development. It's current
 - `cargo check` - Quick analysis without building
 - `cargo test` / `cargo t` - Run all tests
 - `cargo test -- <test_name>` - Run a specific test
-- `cargo run` - Run the project (when binary target is added)
+- `cargo +nightly bench` - Run benchmarks (requires nightly Rust)
 - `cargo clean` - Remove build artifacts
 - `cargo doc` - Generate and open documentation
 - `cargo clippy` - Run linter checks
@@ -21,13 +21,19 @@ Jhon is a Rust library project (edition 2024) in early development. It's current
 ## Architecture
 
 This is a library crate with a flat structure:
-- `src/lib.rs` - Main library entry point
-
-Currently uses no external dependencies and has no module organization. As the project grows, consider:
-- Organizing code into logical modules (e.g., `src/core/`, `src/utils/`)
-- Adding proper documentation with `///` doc comments
-- Structuring the API surface area clearly
+- `src/lib.rs` - Main library entry point with parser and serializer
+- `benches/benchmark.rs` - Performance benchmarks comparing JHON vs JSON
 
 ## Testing
 
-Tests use standard Rust patterns with `#[test]` attributes and `assert_eq!` macros. All tests are currently located inline in `src/lib.rs`.
+Tests use standard Rust patterns with `#[test]` attributes and `assert_eq!` macros. All tests are located inline in `src/lib.rs`.
+
+## Benchmarks
+
+The benchmarks use the libtest harness with `#[bench]` attributes (requires nightly Rust):
+
+```bash
+cargo +nightly bench
+```
+
+Benchmark results compare JHON parsing/serialization against serde_json.

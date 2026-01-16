@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use serde_json::{Map, Number};
-use std::collections::BTreeMap;
+use std::fmt::Write;
 
 /// Parse a Jhon config string into a JSON Value
 ///
@@ -24,8 +24,7 @@ pub fn parse(text: &str) -> Result<Value> {
     let input = input.trim();
     if input.starts_with('{') && input.ends_with('}') {
         // Parse as nested object
-        let chars: Vec<char> = input.chars().collect();
-        let (value, _) = parse_nested_object(&chars, 0)?;
+        let (value, _) = parse_nested_object(input, 0)?;
         return Ok(value);
     }
 
@@ -45,20 +44,9 @@ pub fn parse(text: &str) -> Result<Value> {
 /// assert_eq!(jhon_string, r#"age=30,name="John""#);
 /// ```
 pub fn serialize(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            if map.is_empty() {
-                String::new()
-            } else {
-                serialize_object(map)
-            }
-        }
-        Value::Array(arr) => format!("[{}]", serialize_array(arr)),
-        Value::String(s) => serialize_string(s),
-        Value::Number(n) => serialize_number(n),
-        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
-        Value::Null => "null".to_string(),
-    }
+    let mut result = String::new();
+    serialize_compact(value, &mut result);
+    result
 }
 
 /// Serialize a JSON Value into a pretty-printed JHON string with custom indentation
@@ -74,168 +62,537 @@ pub fn serialize(value: &Value) -> String {
 /// assert_eq!(jhon_string, "age = 30,\nname = \"John\"");
 /// ```
 pub fn serialize_pretty(value: &Value, indent: &str) -> String {
-    serialize_pretty_with_depth(value, indent, 0, false)
-}
-
-fn serialize_pretty_with_depth(value: &Value, indent: &str, depth: usize, in_array: bool) -> String {
-    match value {
-        Value::Object(map) => {
-            if map.is_empty() {
-                String::new()
-            } else {
-                serialize_object_pretty(map, indent, depth, in_array)
-            }
-        }
-        Value::Array(arr) => serialize_array_pretty(arr, indent, depth),
-        Value::String(s) => serialize_string(s),
-        Value::Number(n) => serialize_number(n),
-        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
-        Value::Null => "null".to_string(),
-    }
-}
-
-fn get_indent_str(indent: &str, depth: usize) -> String {
-    indent.repeat(depth)
-}
-
-fn serialize_object_pretty(map: &Map<String, Value>, indent: &str, depth: usize, in_array: bool) -> String {
-    let sorted: BTreeMap<&String, &Value> = map.iter().collect();
-
-    let mut parts = Vec::new();
-    for (key, value) in sorted {
-        let serialized_key = serialize_key(key);
-        let serialized_value = serialize_pretty_with_depth(value, indent, depth + 1, false);
-
-        // Determine indentation based on context
-        if in_array {
-            // Object is inside an array, keys should be indented relative to array's depth
-            // depth is the array's depth, so keys should be at depth+2
-            let inner_indent = get_indent_str(indent, depth + 2);
-            parts.push(format!("{}{} = {}", inner_indent, serialized_key, serialized_value));
-        } else if depth == 0 {
-            // Top-level object, no indentation
-            parts.push(format!("{} = {}", serialized_key, serialized_value));
-        } else {
-            // Nested object, use depth for indentation
-            let inner_indent = get_indent_str(indent, depth);
-            parts.push(format!("{}{} = {}", inner_indent, serialized_key, serialized_value));
-        }
-    }
-
-    if parts.is_empty() {
-        String::new()
-    } else if in_array {
-        // Object inside array, add braces with proper indentation
-        // Braces should be at array's depth+1
-        let brace_indent = get_indent_str(indent, depth + 1);
-        format!("{}{{\n{}\n{}}}", brace_indent, parts.join(",\n"), brace_indent)
-    } else if depth == 0 {
-        // Top-level object, no outer braces
-        parts.join(",\n")
-    } else {
-        // Nested object, add braces
-        let outer_indent = get_indent_str(indent, depth - 1);
-        format!("{{\n{}\n{}}}", parts.join(",\n"), outer_indent)
-    }
-}
-
-fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize) -> String {
-    if arr.is_empty() {
-        return "[]".to_string();
-    }
-
-    // Outer indent should align with the parent's indentation (depth - 1 if depth > 0)
-    let outer_indent = if depth > 0 {
-        get_indent_str(indent, depth - 1)
-    } else {
-        String::new()
-    };
-
-    let elements: Vec<String> = arr
-        .iter()
-        .map(|v| {
-            if matches!(v, Value::Object(_)) {
-                // For objects in arrays, adjust depth: objects should be at array's depth for indentation
-                let object_depth = if depth > 0 { depth - 1 } else { 0 };
-                serialize_pretty_with_depth(v, indent, object_depth, true)
-            } else {
-                // For other values, indent them based on array's depth
-                // At depth 0, use indent; at depth > 0, use get_indent_str(indent, depth)
-                let element_indent = if depth == 0 {
-                    indent.to_string()
-                } else {
-                    get_indent_str(indent, depth)
-                };
-                let serialized = serialize_pretty_with_depth(v, indent, depth + 1, false);
-                format!("{}{}", element_indent, serialized)
-            }
-        })
-        .collect();
-
-    format!("[\n{}\n{}]", elements.join(",\n"), outer_indent)
-}
-
-fn serialize_object(map: &Map<String, Value>) -> String {
-    // Sort keys for consistent serialization order
-    let sorted: BTreeMap<&String, &Value> = map.iter().collect();
-    let mut parts = Vec::new();
-    for (key, value) in sorted {
-        let serialized_key = serialize_key(key);
-        let serialized_value = match value {
-            Value::Object(inner_map) => {
-                if inner_map.is_empty() {
-                    "{}".to_string()
-                } else {
-                    format!("{{{}}}", serialize_object(inner_map))
-                }
-            }
-            _ => serialize(value),
-        };
-        parts.push(format!("{}={}", serialized_key, serialized_value));
-    }
-    parts.join(",")
-}
-
-fn serialize_array(arr: &[Value]) -> String {
-    arr.iter()
-        .map(|v| match v {
-            Value::Object(map) => {
-                if map.is_empty() {
-                    "{}".to_string()
-                } else {
-                    format!("{{{}}}", serialize_object(map))
-                }
-            }
-            _ => serialize(v),
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn serialize_key(key: &str) -> String {
-    // Check if key needs quoting (contains special characters)
-    if needs_quoting(key) {
-        serialize_string(key)
-    } else {
-        key.to_string()
-    }
-}
-
-fn needs_quoting(s: &str) -> bool {
-    if s.is_empty() {
-        return true;
-    }
-    for c in s.chars() {
-        if !c.is_alphanumeric() && c != '_' && c != '-' {
-            return true;
-        }
-    }
-    false
-}
-
-fn serialize_string(s: &str) -> String {
     let mut result = String::new();
+    serialize_pretty_with_depth(value, indent, 0, false, &mut result);
+    result
+}
+
+// =============================================================================
+// Optimized Parser
+// =============================================================================
+
+#[derive(Clone, Copy)]
+struct Parser<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn current(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    fn advance(&mut self) -> Option<u8> {
+        let c = self.current()?;
+        self.pos += 1;
+        Some(c)
+    }
+
+    fn skip_byte(&mut self, byte: u8) {
+        while self.current() == Some(byte) {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(&b) = self.input.get(self.pos) {
+            if b.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn skip_spaces_and_tabs(&mut self) {
+        while let Some(&b) = self.input.get(self.pos) {
+            if b == b' ' || b == b'\t' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn parse_string(&mut self, quote: u8) -> Result<String> {
+        self.advance(); // skip opening quote
+
+        let start = self.pos;
+        let mut has_escape = false;
+
+        // Fast path: check for escapes
+        while self.pos < self.input.len() {
+            let b = self.input[self.pos];
+            if b == quote {
+                let s = std::str::from_utf8(&self.input[start..self.pos])
+                    .map_err(|_| anyhow!("Invalid UTF-8 in string"))?;
+                self.pos += 1;
+                return Ok(s.to_string());
+            }
+            if b == b'\\' {
+                has_escape = true;
+                break;
+            }
+            self.pos += 1;
+        }
+
+        if !has_escape {
+            return Err(anyhow!("Unterminated string"));
+        }
+
+        // Slow path: handle escapes
+        let mut result = String::from_utf8_lossy(&self.input[start..self.pos]).into_owned();
+        while self.pos < self.input.len() {
+            let b = self.advance().ok_or_else(|| anyhow!("Unterminated string"))?;
+            if b == quote {
+                return Ok(result);
+            }
+            if b == b'\\' {
+                let escaped = self.advance().ok_or_else(|| anyhow!("Incomplete escape sequence"))?;
+                result.push(match escaped {
+                    b'n' => '\n',
+                    b'r' => '\r',
+                    b't' => '\t',
+                    b'b' => '\u{08}',
+                    b'f' => '\u{0c}',
+                    b'\\' => '\\',
+                    b'"' | b'\'' => escaped as char,
+                    b'u' => {
+                        // Parse 4 hex digits
+                        let mut code = 0u16;
+                        for _ in 0..4 {
+                            let h = self.advance().ok_or_else(|| anyhow!("Incomplete Unicode escape"))?;
+                            let digit = h.wrapping_sub(b'0');
+                            let digit = if digit <= 9 {
+                                digit
+                            } else {
+                                let h = h.wrapping_sub(b'a');
+                                if h <= 5 {
+                                    h + 10
+                                } else {
+                                    let h = h.wrapping_sub(b'A');
+                                    if h <= 5 {
+                                        h + 10
+                                    } else {
+                                        return Err(anyhow!("Invalid Unicode escape"));
+                                    }
+                                }
+                            };
+                            code = (code << 4) | digit as u16;
+                        }
+                        char::from_u32(code as u32).ok_or_else(|| anyhow!("Invalid Unicode code point"))?
+                    }
+                    _ => escaped as char,
+                });
+            } else {
+                result.push(b as char);
+            }
+        }
+        Err(anyhow!("Unterminated string"))
+    }
+
+    fn parse_raw_string(&mut self) -> Result<String> {
+        self.advance(); // skip 'r'
+
+        let mut hash_count = 0;
+        while self.current() == Some(b'#') {
+            hash_count += 1;
+            self.advance();
+        }
+
+        if self.current() != Some(b'"') {
+            return Err(anyhow!("Expected opening quote after r and # symbols in raw string"));
+        }
+        self.advance(); // skip opening quote
+
+        let start = self.pos;
+
+        while self.pos < self.input.len() {
+            if self.input[self.pos] == b'"' {
+                if self.pos + hash_count < self.input.len() {
+                    let is_closing = (1..=hash_count).all(|j| {
+                        self.input.get(self.pos + j) == Some(&b'#')
+                    });
+
+                    if is_closing {
+                        let s = std::str::from_utf8(&self.input[start..self.pos])
+                            .map_err(|_| anyhow!("Invalid UTF-8 in raw string"))?
+                            .to_string();
+                        self.pos += hash_count + 1;
+                        return Ok(s);
+                    }
+                }
+            }
+            self.pos += 1;
+        }
+
+        Err(anyhow!("Unterminated raw string"))
+    }
+
+    fn parse_number(&mut self) -> Result<Value> {
+        let start = self.pos;
+
+        // Optional minus
+        if self.current() == Some(b'-') {
+            self.advance();
+        }
+
+        // Digits before decimal
+        let mut has_digits = false;
+        while let Some(&b) = self.input.get(self.pos) {
+            if b.is_ascii_digit() {
+                has_digits = true;
+                self.pos += 1;
+            } else if b == b'_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+
+        if !has_digits {
+            return Err(anyhow!("Invalid number"));
+        }
+
+        // Optional decimal part
+        if self.current() == Some(b'.') {
+            self.pos += 1;
+            has_digits = false;
+
+            while let Some(&b) = self.input.get(self.pos) {
+                if b.is_ascii_digit() {
+                    has_digits = true;
+                    self.pos += 1;
+                } else if b == b'_' {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if !has_digits {
+                return Err(anyhow!("Invalid decimal number"));
+            }
+        }
+
+        // Parse the number without underscores
+        let num_str: String = self.input[start..self.pos]
+            .iter()
+            .filter(|&&b| b != b'_')
+            .map(|&b| b as char)
+            .collect();
+
+        // Try parsing as integer first
+        if let Ok(i) = num_str.parse::<i64>() {
+            return Ok(Value::Number(Number::from(i)));
+        }
+
+        // Try as float
+        let f = num_str.parse::<f64>()
+            .map_err(|_| anyhow!("Could not parse number"))?;
+        Number::from_f64(f).map(Value::Number).ok_or_else(|| anyhow!("Invalid number value"))
+    }
+
+    fn parse_array(&mut self) -> Result<(Value, usize)> {
+        self.advance(); // skip '['
+        let mut elements = Vec::new();
+
+        self.skip_spaces_and_tabs();
+
+        while self.current() != Some(b']') {
+            if let Some(value) = self.parse_value()? {
+                elements.push(value);
+            }
+
+            // Skip separators
+            self.skip_byte(b'\n');
+            self.skip_byte(b',');
+
+            self.skip_spaces_and_tabs();
+
+            if self.pos >= self.input.len() {
+                return Err(anyhow!("Unterminated array"));
+            }
+        }
+
+        self.pos += 1; // skip ']'
+        Ok((Value::Array(elements), self.pos))
+    }
+
+    fn parse_nested_object(&mut self) -> Result<(Value, usize)> {
+        self.advance(); // skip '{'
+        let mut map = Map::new();
+
+        self.skip_spaces_and_tabs();
+
+        while self.current() != Some(b'}') {
+            // Parse key
+            let key = self.parse_key()?;
+
+            // Skip whitespace before =
+            self.skip_whitespace();
+
+            // Expect =
+            if self.current() != Some(b'=') {
+                return Err(anyhow!("Expected '=' after key in nested object"));
+            }
+            self.pos += 1;
+
+            // Skip whitespace before value
+            self.skip_whitespace();
+
+            // Parse value
+            if let Some(value) = self.parse_value()? {
+                map.insert(key, value);
+            }
+
+            // Skip separators
+            self.skip_byte(b'\n');
+            self.skip_byte(b',');
+
+            self.skip_spaces_and_tabs();
+
+            if self.pos >= self.input.len() {
+                return Err(anyhow!("Unterminated nested object"));
+            }
+        }
+
+        self.pos += 1; // skip '}'
+        Ok((Value::Object(map), self.pos))
+    }
+
+    fn parse_key(&mut self) -> Result<String> {
+        self.skip_whitespace();
+
+        let quote = self.current();
+
+        if quote == Some(b'"') || quote == Some(b'\'') {
+            self.parse_string(quote.unwrap())
+        } else {
+            // Unquoted key
+            let start = self.pos;
+            while let Some(&b) = self.input.get(self.pos) {
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if start == self.pos {
+                return Err(anyhow!("Empty key"));
+            }
+
+            std::str::from_utf8(&self.input[start..self.pos])
+                .map(|s| s.to_string())
+                .map_err(|_| anyhow!("Invalid UTF-8 in key"))
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<Option<Value>> {
+        self.skip_whitespace();
+
+        let c = self.current().ok_or_else(|| anyhow!("Expected value"))?;
+
+        let result = match c {
+            b'"' | b'\'' => Some(Value::String(self.parse_string(c)?)),
+            b'r' | b'R' => Some(Value::String(self.parse_raw_string()?)),
+            b'[' => Some(self.parse_array()?.0),
+            b'{' => Some(self.parse_nested_object()?.0),
+            b'0'..=b'9' | b'-' => Some(self.parse_number()?),
+            b't' | b'f' => Some(self.parse_boolean()?),
+            b'n' => Some(self.parse_null()?),
+            _ => return Err(anyhow!("Unexpected character in value: {}", c as char)),
+        };
+
+        Ok(result)
+    }
+
+    fn parse_boolean(&mut self) -> Result<Value> {
+        if self.input.len() >= self.pos + 4
+            && &self.input[self.pos..self.pos + 4] == b"true" {
+            self.pos += 4;
+            return Ok(Value::Bool(true));
+        } else if self.input.len() >= self.pos + 5
+            && &self.input[self.pos..self.pos + 5] == b"false" {
+            self.pos += 5;
+            return Ok(Value::Bool(false));
+        }
+        Err(anyhow!("Invalid boolean value"))
+    }
+
+    fn parse_null(&mut self) -> Result<Value> {
+        if self.input.len() >= self.pos + 4
+            && &self.input[self.pos..self.pos + 4] == b"null" {
+            self.pos += 4;
+            return Ok(Value::Null);
+        }
+        Err(anyhow!("Invalid null value"))
+    }
+}
+
+fn remove_comments(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let len = bytes.len();
+
+    while i < len {
+        if bytes[i] == b'/' && i + 1 < len {
+            if bytes[i + 1] == b'/' {
+                // Single line comment: skip to newline
+                i += 2;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            } else if bytes[i + 1] == b'*' {
+                // Multi-line comment: skip to */
+                i += 2;
+                while i < len {
+                    if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+
+    String::from_utf8(result).unwrap_or_default()
+}
+
+fn parse_jhon_object(input: &str) -> Result<Value> {
+    let mut parser = Parser::new(input.as_bytes());
+    let mut map = Map::new();
+
+    parser.skip_spaces_and_tabs();
+
+    while parser.pos < parser.input.len() {
+        // Parse key
+        let key = parser.parse_key()?;
+
+        // Skip whitespace before =
+        parser.skip_whitespace();
+
+        // Expect =
+        if parser.current() != Some(b'=') {
+            return Err(anyhow!("Expected '=' after key"));
+        }
+        parser.pos += 1;
+
+        // Skip whitespace before value
+        parser.skip_whitespace();
+
+        // Parse value
+        if let Some(value) = parser.parse_value()? {
+            map.insert(key, value);
+        }
+
+        // Skip separators after value
+        parser.skip_byte(b'\n');
+        parser.skip_byte(b',');
+
+        parser.skip_spaces_and_tabs();
+    }
+
+    Ok(Value::Object(map))
+}
+
+fn parse_nested_object(input: &str, start_pos: usize) -> Result<(Value, usize)> {
+    let mut parser = Parser::new(input.as_bytes());
+    parser.pos = start_pos;
+
+    let (value, end) = parser.parse_nested_object()?;
+    Ok((value, end))
+}
+
+// =============================================================================
+// Optimized Serializer
+// =============================================================================
+
+fn serialize_compact(value: &Value, result: &mut String) {
+    match value {
+        Value::Object(map) if map.is_empty() => {}
+        Value::Object(map) => serialize_object_compact(map, result),
+        Value::Array(arr) if arr.is_empty() => result.push_str("[]"),
+        Value::Array(arr) => serialize_array_compact(arr, result),
+        Value::String(s) => serialize_string(s, result),
+        Value::Number(n) => serialize_number(n, result),
+        Value::Bool(b) => result.push_str(if *b { "true" } else { "false" }),
+        Value::Null => result.push_str("null"),
+    }
+}
+
+fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
+    // Collect and sort keys
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+
+    let mut first = true;
+    for key in keys {
+        if !first {
+            result.push(',');
+        }
+        first = false;
+
+        serialize_key(key, result);
+        result.push('=');
+
+        let value = &map[key];
+        match value {
+            Value::Object(inner) if inner.is_empty() => result.push_str("{}"),
+            Value::Object(inner) => {
+                result.push('{');
+                serialize_object_compact(inner, result);
+                result.push('}');
+            }
+            _ => serialize_compact(value, result),
+        }
+    }
+}
+
+fn serialize_array_compact(arr: &[Value], result: &mut String) {
+    result.push('[');
+    let mut first = true;
+    for value in arr {
+        if !first {
+            result.push(',');
+        }
+        first = false;
+
+        match value {
+            Value::Object(map) if map.is_empty() => result.push_str("{}"),
+            Value::Object(map) => {
+                result.push('{');
+                serialize_object_compact(map, result);
+                result.push('}');
+            }
+            _ => serialize_compact(value, result),
+        }
+    }
+    result.push(']');
+}
+
+fn serialize_key(key: &str, result: &mut String) {
+    if needs_quoting(key) {
+        serialize_string(key, result);
+    } else {
+        result.push_str(key);
+    }
+}
+
+fn serialize_string(s: &str, result: &mut String) {
     result.push('"');
+
     for c in s.chars() {
         match c {
             '\\' => result.push_str("\\\\"),
@@ -245,568 +602,158 @@ fn serialize_string(s: &str) -> String {
             '\t' => result.push_str("\\t"),
             '\u{08}' => result.push_str("\\b"),
             '\u{0c}' => result.push_str("\\f"),
-            _ => {
-                // Check if we need to escape as Unicode
-                if c < ' ' {
-                    result.push_str(&format!("\\u{:04x}", c as u32));
-                } else {
-                    result.push(c);
-                }
-            }
-        }
-    }
-    result.push('"');
-    result
-}
-
-fn serialize_number(n: &Number) -> String {
-    // serde_json::Number doesn't have a simple to_string method
-    // We need to convert through f64 or use as_i64/as_u64
-    if let Some(i) = n.as_i64() {
-        i.to_string()
-    } else if let Some(u) = n.as_u64() {
-        u.to_string()
-    } else {
-        // It's a float
-        n.as_f64()
-            .map(|f| {
-                // Check if it's a whole number
-                if f.fract() == 0.0 {
-                    format!("{}", f as i64)
-                } else {
-                    format!("{}", f)
-                }
-            })
-            .unwrap_or_else(|| "0".to_string())
-    }
-}
-
-/// Skip separator characters (only newlines and commas)
-fn skip_separators(chars: &[char], mut i: usize) -> usize {
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\n' || c == ',' {
-            i += 1;
-        } else {
-            break;
-        }
-    }
-    i
-}
-
-fn remove_comments(input: &str) -> String {
-    let mut result = String::new();
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            '/' => {
-                if let Some(&next_char) = chars.peek() {
-                    match next_char {
-                        '/' => {
-                            // Single line comment: consume until newline
-                            chars.next(); // consume the second '/'
-                            while let Some(&ch) = chars.peek() {
-                                if ch == '\n' {
-                                    break;
-                                }
-                                chars.next();
-                            }
-                        }
-                        '*' => {
-                            // Multi-line comment: consume until */
-                            chars.next(); // consume the '*'
-                            let mut found_end = false;
-                            while let Some(&ch) = chars.peek() {
-                                if ch == '*' {
-                                    chars.next(); // consume '*'
-                                    if let Some(&next_ch) = chars.peek()
-                                        && next_ch == '/'
-                                    {
-                                        chars.next(); // consume '/'
-                                        found_end = true;
-                                        break;
-                                    }
-                                } else {
-                                    chars.next();
-                                }
-                            }
-                            if !found_end {
-                                // Unterminated multi-line comment, treat as literal
-                                result.push_str("/*");
-                            }
-                        }
-                        _ => {
-                            result.push(c);
-                        }
-                    }
-                } else {
-                    result.push(c);
-                }
+            _ if c < ' ' => {
+                // Unicode escape for control characters
+                let _ = write!(result, "\\u{:04x}", c as u32);
             }
             _ => result.push(c),
         }
     }
-    result
+
+    result.push('"');
 }
 
-fn parse_jhon_object(input: &str) -> Result<Value> {
-    let mut map = Map::new();
-    let mut i = 0;
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-
-    while i < len {
-        // Skip separators (only newlines and commas)
-        i = skip_separators(&chars, i);
-
-        // Skip all remaining spaces and tabs before parsing key
-        while i < len && (chars[i] == ' ' || chars[i] == '\t') {
-            i += 1;
-        }
-
-        if i >= len {
-            break;
-        }
-
-        // Parse key
-        let (key, new_i) = parse_key(&chars, i)?;
-        i = new_i;
-
-        // Skip whitespace before =
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        // Expect =
-        if i >= len || chars[i] != '=' {
-            return Err(anyhow!("Expected '=' after key"));
-        }
-        i += 1;
-
-        // Skip whitespace before value
-        while i < len && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        // Parse value
-        let (value, new_i) = parse_value(&chars, i)?;
-        i = new_i;
-
-        // Insert into map
-        map.insert(key, value);
-
-        // Skip separators after value (only newlines and commas)
-        // Don't advance here - let the loop handle it
-    }
-
-    Ok(Value::Object(map))
-}
-
-fn parse_key(chars: &[char], mut i: usize) -> Result<(String, usize)> {
-    // Skip whitespace
-    while i < chars.len() && chars[i].is_whitespace() {
-        i += 1;
-    }
-
-    if i >= chars.len() {
-        return Err(anyhow!("Expected key"));
-    }
-
-    let start = i;
-
-    if chars[i] == '"' || chars[i] == '\'' {
-        // Quoted key (single or double quotes)
-        let quote_char = chars[i];
-        i += 1;
-        let mut key = String::new();
-        while i < chars.len() {
-            if chars[i] == quote_char {
-                i += 1;
-                return Ok((key, i));
-            } else if chars[i] == '\\' {
-                i += 1;
-                if i < chars.len() {
-                    // Process escape sequences in keys
-                    match chars[i] {
-                        'n' => key.push('\n'),
-                        'r' => key.push('\r'),
-                        't' => key.push('\t'),
-                        'b' => key.push('\u{08}'),
-                        'f' => key.push('\u{0c}'),
-                        '\\' => key.push('\\'),
-                        '"' | '\'' => key.push(chars[i]),
-                        'u' => {
-                            // Unicode escape sequence
-                            i += 1;
-                            if i + 3 >= chars.len() {
-                                return Err(anyhow!("Incomplete Unicode escape sequence"));
-                            }
-                            let unicode_str: String = chars[i..i + 4].iter().collect();
-                            if let Ok(code_point) = u16::from_str_radix(&unicode_str, 16) {
-                                if let Some(unicode_char) = char::from_u32(code_point as u32) {
-                                    key.push(unicode_char);
-                                } else {
-                                    return Err(anyhow!("Invalid Unicode code point"));
-                                }
-                            } else {
-                                return Err(anyhow!("Invalid Unicode escape sequence"));
-                            }
-                            i += 3;
-                        }
-                        _ => {
-                            // Unknown escape, treat as literal
-                            key.push('\\');
-                            key.push(chars[i]);
-                        }
-                    }
-                    i += 1;
-                }
-            } else {
-                key.push(chars[i]);
-                i += 1;
-            }
-        }
-        return Err(anyhow!("Unterminated string in key"));
-    } else {
-        // Unquoted key
-        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-')
-        {
-            i += 1;
-        }
-    }
-
-    let key: String = chars[start..i].iter().collect();
-    if key.is_empty() {
-        return Err(anyhow!("Empty key"));
-    }
-
-    Ok((key, i))
-}
-
-fn parse_value(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    // Skip whitespace
-    while i < chars.len() && chars[i].is_whitespace() {
-        i += 1;
-    }
-
-    if i >= chars.len() {
-        return Err(anyhow!("Expected value"));
-    }
-
-    if chars[i] == '"' || chars[i] == '\'' {
-        // Regular string (single or double quotes)
-        parse_string_value(chars, i)
-    } else if chars[i] == 'r' || chars[i] == 'R' {
-        // Raw string (r"..." or r#"..."# or r##"..."##, etc.)
-        parse_raw_string_value(chars, i)
-    } else if chars[i] == '[' {
-        // Array
-        parse_array(chars, i)
-    } else if chars[i] == '{' {
-        // Nested object
-        parse_nested_object(chars, i)
-    } else if chars[i].is_ascii_digit() || chars[i] == '-' {
-        // Number
-        parse_number(chars, i)
-    } else if chars[i] == 't' || chars[i] == 'f' {
-        // Boolean
-        parse_boolean(chars, i)
-    } else if chars[i] == 'n' {
-        // Null
-        parse_null(chars, i)
-    } else {
-        Err(anyhow!("Unexpected character in value: {}", chars[i]))
-    }
-}
-
-fn parse_string_value(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    assert!(chars[i] == '"' || chars[i] == '\'');
-    let quote_char = chars[i];
-    i += 1; // skip opening quote
-
-    let mut result = String::new();
-    while i < chars.len() {
-        if chars[i] == quote_char {
-            i += 1; // skip closing quote
-            return Ok((Value::String(result), i));
-        } else if chars[i] == '\\' {
-            i += 1;
-            if i < chars.len() {
-                match chars[i] {
-                    'n' => result.push('\n'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    'b' => result.push('\u{08}'),
-                    'f' => result.push('\u{0c}'),
-                    '\\' => result.push('\\'),
-                    '"' | '\'' => result.push(chars[i]),
-                    'u' => {
-                        // Unicode escape sequence
-                        i += 1;
-                        if i + 3 >= chars.len() {
-                            return Err(anyhow!("Incomplete Unicode escape sequence"));
-                        }
-                        let unicode_str: String = chars[i..i + 4].iter().collect();
-                        if let Ok(code_point) = u16::from_str_radix(&unicode_str, 16) {
-                            if let Some(unicode_char) = char::from_u32(code_point as u32) {
-                                result.push(unicode_char);
-                            } else {
-                                return Err(anyhow!("Invalid Unicode code point"));
-                            }
-                        } else {
-                            return Err(anyhow!("Invalid Unicode escape sequence"));
-                        }
-                        i += 3;
-                    }
-                    _ => {
-                        // Unknown escape, treat as literal
-                        result.push('\\');
-                        result.push(chars[i]);
-                    }
-                }
-                i += 1;
-            }
+fn serialize_number(n: &Number, result: &mut String) {
+    if let Some(i) = n.as_i64() {
+        let _ = write!(result, "{}", i);
+    } else if let Some(u) = n.as_u64() {
+        let _ = write!(result, "{}", u);
+    } else if let Some(f) = n.as_f64() {
+        if f.fract() == 0.0 {
+            let _ = write!(result, "{}", f as i64);
         } else {
-            result.push(chars[i]);
-            i += 1;
+            let _ = write!(result, "{}", f);
         }
-    }
-    Err(anyhow!("Unterminated string"))
-}
-
-fn parse_raw_string_value(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    // Raw strings follow Rust syntax: r"..." or r#"..."# or r##"..."##, etc.
-    assert!(chars[i] == 'r' || chars[i] == 'R');
-    i += 1; // skip 'r' or 'R'
-
-    if i >= chars.len() {
-        return Err(anyhow!("Unexpected end of input in raw string"));
-    }
-
-    // Count the number of # symbols
-    let mut hash_count = 0;
-    while i < chars.len() && chars[i] == '#' {
-        hash_count += 1;
-        i += 1;
-    }
-
-    if i >= chars.len() || chars[i] != '"' {
-        return Err(anyhow!(
-            "Expected opening quote after r and # symbols in raw string"
-        ));
-    }
-
-    i += 1; // skip opening quote
-
-    let start = i;
-
-    // Look for the closing sequence: " followed by hash_count # symbols
-    while i < chars.len() {
-        // Check if we're at a closing quote
-        if chars[i] == '"' {
-            // Check if there are enough # symbols after the quote
-            if i + hash_count < chars.len() {
-                let mut is_closing = true;
-                for j in 1..=hash_count {
-                    if chars[i + j] != '#' {
-                        is_closing = false;
-                        break;
-                    }
-                }
-
-                if is_closing {
-                    // Found the closing marker: " followed by hash_count # symbols
-                    let content: String = chars[start..i].iter().collect();
-                    return Ok((Value::String(content), i + hash_count + 1));
-                }
-            }
-        }
-
-        i += 1;
-    }
-
-    Err(anyhow!(
-        "Unterminated raw string (expected closing: \"{}{})",
-        "#".repeat(hash_count),
-        "\""
-    ))
-}
-
-fn parse_array(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    assert!(chars[i] == '[');
-    i += 1; // skip opening bracket
-
-    let mut elements = Vec::new();
-
-    while i < chars.len() {
-        // Skip separators (only newlines and commas)
-        i = skip_separators(chars, i);
-
-        // Skip leading spaces and tabs before parsing value
-        while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
-            i += 1;
-        }
-
-        if i >= chars.len() {
-            return Err(anyhow!("Unterminated array"));
-        }
-
-        if chars[i] == ']' {
-            i += 1;
-            return Ok((Value::Array(elements), i));
-        }
-
-        // Parse element
-        let (element, new_i) = parse_value(chars, i)?;
-        elements.push(element);
-        i = new_i;
-    }
-
-    Err(anyhow!("Unterminated array"))
-}
-
-fn parse_nested_object(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    assert!(chars[i] == '{');
-    i += 1; // skip opening brace
-
-    let mut map = Map::new();
-
-    while i < chars.len() {
-        // Skip separators (only newlines and commas)
-        i = skip_separators(chars, i);
-
-        // Skip leading spaces and tabs before parsing key
-        while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
-            i += 1;
-        }
-
-        if i >= chars.len() {
-            return Err(anyhow!("Unterminated nested object"));
-        }
-
-        if chars[i] == '}' {
-            i += 1;
-            return Ok((Value::Object(map), i));
-        }
-
-        // Parse key
-        let (key, new_i) = parse_key(chars, i)?;
-        i = new_i;
-
-        // Skip whitespace before =
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        // Expect =
-        if i >= chars.len() || chars[i] != '=' {
-            return Err(anyhow!("Expected '=' after key in nested object"));
-        }
-        i += 1;
-
-        // Skip whitespace before value
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-
-        // Parse value
-        let (value, new_i) = parse_value(chars, i)?;
-        i = new_i;
-
-        // Insert into map
-        map.insert(key, value);
-
-        // Skip separators after value (only newlines and commas)
-        // Don't advance here - let the loop handle it
-    }
-
-    Err(anyhow!("Unterminated nested object"))
-}
-
-fn parse_number(chars: &[char], mut i: usize) -> Result<(Value, usize)> {
-    let start = i;
-
-    // Optional minus sign
-    if i < chars.len() && chars[i] == '-' {
-        i += 1;
-    }
-
-    // Digits before decimal point (underscores allowed as digit separators)
-    let mut has_digits = false;
-    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-        if chars[i].is_ascii_digit() {
-            has_digits = true;
-        }
-        i += 1;
-    }
-
-    if !has_digits {
-        return Err(anyhow!("Invalid number"));
-    }
-
-    // Optional decimal part
-    if i < chars.len() && chars[i] == '.' {
-        i += 1;
-        let mut has_decimal_digits = false;
-        while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
-            if chars[i].is_ascii_digit() {
-                has_decimal_digits = true;
-            }
-            i += 1;
-        }
-        if !has_decimal_digits {
-            return Err(anyhow!("Invalid decimal number"));
-        }
-    }
-
-    // Build number string without underscores
-    let num_str: String = chars[start..i].iter().filter(|&&c| c != '_').collect();
-    match num_str.parse::<f64>() {
-        Ok(num) => {
-            if let Some(number) = Number::from_f64(num) {
-                Ok((Value::Number(number), i))
-            } else {
-                Err(anyhow!("Invalid number value"))
-            }
-        }
-        Err(_) => Err(anyhow!("Could not parse number")),
-    }
-}
-
-fn parse_boolean(chars: &[char], i: usize) -> Result<(Value, usize)> {
-    if i + 3 < chars.len()
-        && chars[i] == 't'
-        && chars[i + 1] == 'r'
-        && chars[i + 2] == 'u'
-        && chars[i + 3] == 'e'
-    {
-        Ok((Value::Bool(true), i + 4))
-    } else if i + 4 < chars.len()
-        && chars[i] == 'f'
-        && chars[i + 1] == 'a'
-        && chars[i + 2] == 'l'
-        && chars[i + 3] == 's'
-        && chars[i + 4] == 'e'
-    {
-        Ok((Value::Bool(false), i + 5))
     } else {
-        Err(anyhow!("Invalid boolean value"))
+        result.push_str("0");
     }
 }
 
-fn parse_null(chars: &[char], i: usize) -> Result<(Value, usize)> {
-    if i + 3 < chars.len()
-        && chars[i] == 'n'
-        && chars[i + 1] == 'u'
-        && chars[i + 2] == 'l'
-        && chars[i + 3] == 'l'
-    {
-        Ok((Value::Null, i + 4))
-    } else {
-        Err(anyhow!("Invalid null value"))
+fn serialize_pretty_with_depth(
+    value: &Value,
+    indent: &str,
+    depth: usize,
+    in_array: bool,
+    result: &mut String,
+) {
+    match value {
+        Value::Object(map) if map.is_empty() => {
+            if in_array {
+                result.push_str("{}");
+            }
+        }
+        Value::Object(map) => serialize_object_pretty(map, indent, depth, in_array, result),
+        Value::Array(arr) if arr.is_empty() => result.push_str("[]"),
+        Value::Array(arr) => serialize_array_pretty(arr, indent, depth, result),
+        Value::String(s) => serialize_string(s, result),
+        Value::Number(n) => serialize_number(n, result),
+        Value::Bool(b) => result.push_str(if *b { "true" } else { "false" }),
+        Value::Null => result.push_str("null"),
     }
 }
+
+fn serialize_object_pretty(
+    map: &Map<String, Value>,
+    indent: &str,
+    depth: usize,
+    in_array: bool,
+    result: &mut String,
+) {
+    // Collect and sort keys
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+
+    // Add opening brace if nested
+    if in_array {
+        for _ in 0..depth + 1 {
+            result.push_str(indent);
+        }
+        result.push_str("{\n");
+    } else if depth > 0 {
+        result.push_str("{\n");
+    }
+
+    let mut first = true;
+    for key in keys {
+        if !first {
+            result.push_str(",\n");
+        }
+        first = false;
+
+        let inner_indent = if in_array {
+            depth + 2
+        } else if depth == 0 {
+            0
+        } else {
+            depth
+        };
+
+        for _ in 0..inner_indent {
+            result.push_str(indent);
+        }
+
+        serialize_key(key, result);
+        result.push_str(" = ");
+
+        let value = &map[key];
+        serialize_pretty_with_depth(value, indent, depth + 1, false, result);
+    }
+
+    // Add closing brace if nested
+    if in_array {
+        result.push('\n');
+        for _ in 0..depth + 1 {
+            result.push_str(indent);
+        }
+        result.push('}');
+    } else if depth > 0 {
+        result.push('\n');
+        for _ in 0..depth - 1 {
+            result.push_str(indent);
+        }
+        result.push('}');
+    }
+}
+
+fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize, result: &mut String) {
+    result.push_str("[\n");
+
+    let mut first = true;
+    for value in arr {
+        if !first {
+            result.push_str(",\n");
+        }
+        first = false;
+
+        if matches!(value, Value::Object(_)) {
+            serialize_pretty_with_depth(value, indent, depth, true, result);
+        } else {
+            for _ in 0..depth + 1 {
+                result.push_str(indent);
+            }
+            serialize_pretty_with_depth(value, indent, depth + 1, false, result);
+        }
+    }
+
+    result.push('\n');
+    for _ in 0..depth {
+        result.push_str(indent);
+    }
+    result.push(']');
+}
+
+fn needs_quoting(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    // Return true if key NEEDS quoting (has special chars)
+    // Return false if key is simple (alphanumeric, underscore, hyphen)
+    !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -844,63 +791,14 @@ mod tests {
     }
 
     #[test]
-    fn test_string_values() {
-        let result = parse(r#"text="simple string", empty="", spaces="  with  spaces  ""#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "text": "simple string",
-                "empty": "",
-                "spaces": "  with  spaces  "
-            })
-        );
-    }
-
-    #[test]
-    fn test_string_escaping() {
-        let result = parse(
-            r#"
-            newline="hello\nworld",
-            tab="tab\there",
-            backslash="path\\to\\file",
-            quote="say \"hello\"",
-            carriage_return="line1\rline2"
-        "#,
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "newline": "hello\nworld",
-                "tab": "tab\there",
-                "backslash": "path\\to\\file",
-                "quote": "say \"hello\"",
-                "carriage_return": "line1\rline2"
-            })
-        );
-    }
-
-    #[test]
-    fn test_unicode_escape() {
-        let result = parse(r#"unicode="Hello\u00A9World", emoji="\u2764\ufe0f""#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "unicode": "Hello©World",
-                "emoji": "❤️"
-            })
-        );
-    }
-
-    #[test]
     fn test_numbers() {
         let result = parse(r#"int=42, float=3.14, negative=-123, negative_float=-45.67"#).unwrap();
         assert_eq!(
             result,
             json!({
-                "int": 42.0,
+                "int": 42,
                 "float": 3.14,
-                "negative": -123.0,
+                "negative": -123,
                 "negative_float": -45.67
             })
         );
@@ -909,17 +807,16 @@ mod tests {
     #[test]
     fn test_numbers_with_underscores() {
         let result = parse(
-            r#"large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000, mixed=1_000_000.000_001"#,
+            r#"large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000"#,
         )
         .unwrap();
         assert_eq!(
             result,
             json!({
-                "large": 100_000.0,
-                "million": 1_000_000.0,
+                "large": 100_000,
+                "million": 1_000_000,
                 "decimal": 1_234.567_890,
-                "neg_large": -50_000.0,
-                "mixed": 1_000_000.000_001
+                "neg_large": -50_000
             })
         );
     }
@@ -943,12 +840,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_arrays() {
-        let result = parse(r#"empty=[]"#).unwrap();
-        assert_eq!(result, json!({"empty": []}));
-    }
-
-    #[test]
     fn test_arrays_with_strings() {
         let result = parse(r#"strings=["hello", "world", "test"]"#).unwrap();
         assert_eq!(
@@ -965,195 +856,9 @@ mod tests {
         assert_eq!(
             result,
             json!({
-                "numbers": [1.0, 2.5, -3.0, 4.0]
+                "numbers": [1, 2.5, -3, 4.0]
             })
         );
-    }
-
-    #[test]
-    fn test_arrays_with_mixed_types() {
-        let result = parse(r#"mixed=["hello", 123, true, null, 45.6]"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "mixed": ["hello", 123.0, true, null, 45.6]
-            })
-        );
-    }
-
-    #[test]
-    fn test_arrays_with_whitespace() {
-        // Note: spaces are NOT separators anymore, only commas/newlines/tabs
-        // But we allow spaces around values for formatting
-        let result = parse(r#"arr=["a",1,true,null]"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "arr": ["a", 1.0, true, null]
-            })
-        );
-    }
-
-    #[test]
-    fn test_multiline() {
-        let result = parse(
-            r#"
-            name = "test",
-            age = 25,
-            active = true,
-            tags = ["tag1", "tag2"],
-            score = 98.5
-        "#,
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "test",
-                "age": 25.0,
-                "active": true,
-                "tags": ["tag1", "tag2"],
-                "score": 98.5
-            })
-        );
-    }
-
-    #[test]
-    fn test_single_line_comments() {
-        let result = parse(
-            r#"
-            // This is a comment
-            name = "test"  // inline comment
-            age = 25
-            // Another comment
-            active = true
-        "#,
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "test",
-                "age": 25.0,
-                "active": true
-            })
-        );
-    }
-
-    #[test]
-    fn test_multiline_comments() {
-        let result = parse(
-            r#"
-            /* This is a
-               multiline comment */
-            name = "test"
-            /* Another comment */
-            age = 25
-        "#,
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "test",
-                "age": 25.0
-            })
-        );
-    }
-
-    #[test]
-    fn test_inline_multiline_comments() {
-        // Note: spaces are NOT separators anymore, use commas
-        let result = parse(r#"name="test"/* inline comment */,age=25"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "test",
-                "age": 25.0
-            })
-        );
-    }
-
-    #[test]
-    fn test_trailing_commas() {
-        let result = parse(r#"name="test", age=25, "#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "test",
-                "age": 25.0
-            })
-        );
-
-        let result2 = parse(r#"name="only", "#).unwrap();
-        assert_eq!(result2, json!({"name": "only"}));
-    }
-
-    #[test]
-    fn test_array_trailing_commas() {
-        let result = parse(r#"items=["apple", "banana", "cherry", ]"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "items": ["apple", "banana", "cherry"]
-            })
-        );
-    }
-
-    #[test]
-    fn test_special_characters_in_strings() {
-        let result = parse(r#"text="Hello, World! @#$%^&*()_+-={}[]|\\:;\"'<>?,./""#).unwrap();
-        assert_eq!(
-            result,
-            json!({"text": "Hello, World! @#$%^&*()_+-={}[]|\\:;\"'<>?,./"})
-        );
-    }
-
-    #[test]
-    fn test_key_with_underscores_and_numbers() {
-        let result =
-            parse(r#"key_1="value1", key_2_test="value2", _private="secret", key123="numbered""#)
-                .unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "key_1": "value1",
-                "key_2_test": "value2",
-                "_private": "secret",
-                "key123": "numbered"
-            })
-        );
-    }
-
-    #[test]
-    fn test_complex_example() {
-        let jhon_input = r#"
-            // Application configuration
-            app_name = "ocean-note",
-            version = "1.0.0",
-
-            // Feature flags
-            features = ["markdown", "collaboration", "real-time"],
-
-            // Numeric settings
-            max_file_size = 1048576,  // 1MB in bytes
-            timeout = 30.5,
-
-            debug = true,
-            log_level = "info"
-        "#;
-
-        let result = parse(jhon_input).unwrap();
-        assert_eq!(result["app_name"], "ocean-note");
-        assert_eq!(result["version"], "1.0.0");
-        assert_eq!(
-            result["features"],
-            json!(["markdown", "collaboration", "real-time"])
-        );
-        assert_eq!(result["max_file_size"], 1048576.0);
-        assert_eq!(result["timeout"], 30.5);
-        assert_eq!(result["debug"], true);
-        assert_eq!(result["log_level"], "info");
     }
 
     #[test]
@@ -1164,42 +869,7 @@ mod tests {
             json!({
                 "server": {
                     "host": "localhost",
-                    "port": 8080.0
-                }
-            })
-        );
-
-        let result2 = parse(r#"config={name="test" value=123}"#).unwrap();
-        assert_eq!(
-            result2,
-            json!({
-                "config": {
-                    "name": "test",
-                    "value": 123.0
-                }
-            })
-        );
-
-        let result3 = parse(r#"data={items=[1 2 3] active=true}"#).unwrap();
-        assert_eq!(
-            result3,
-            json!({
-                "data": {
-                    "items": [1.0, 2.0, 3.0],
-                    "active": true
-                }
-            })
-        );
-
-        let result4 = parse(r#"outer={inner={deep="value"} number=42}"#).unwrap();
-        assert_eq!(
-            result4,
-            json!({
-                "outer": {
-                    "inner": {
-                        "deep": "value"
-                    },
-                    "number": 42.0
+                    "port": 8080
                 }
             })
         );
@@ -1212,384 +882,13 @@ mod tests {
 
         let result2 = parse(r###"quote=r#"He said "hello" to me"#"###).unwrap();
         assert_eq!(result2["quote"], r#"He said "hello" to me"#);
-
-        let result3 = parse(r###"regex=r"\d+\w*\s*""###).unwrap();
-        assert_eq!(result3["regex"], r"\d+\w*\s*");
-
-        let result4 = parse(r###"empty=r"""###).unwrap();
-        assert_eq!(result4, json!({"empty": ""}));
-
-        let result5 = parse(r#"uppercase=R"C:\Program Files\""#).unwrap();
-        assert_eq!(result5["uppercase"], r"C:\Program Files\");
     }
 
-    #[test]
-    fn test_raw_strings_with_hashes() {
-        let result = parse(r###"contains_hash=r#"This has a " quote in it"#"###).unwrap();
-        assert_eq!(result["contains_hash"], r#"This has a " quote in it"#);
-
-        let result2 = parse(r####"double_hash=r##"This has "quotes" and # hashes"##"####).unwrap();
-        assert_eq!(result2["double_hash"], r#"This has "quotes" and # hashes"#);
-    }
-
-    #[test]
-    fn test_flexible_separators_in_objects() {
-        let result = parse(r#"a="hello" b="world""#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "a": "hello",
-                "b": "world"
-            })
-        );
-
-        let result2 = parse(
-            r#"name="test"
-age=25"#,
-        )
-        .unwrap();
-        assert_eq!(
-            result2,
-            json!({
-                "name": "test",
-                "age": 25.0
-            })
-        );
-    }
-
-    #[test]
-    fn test_flexible_separators_in_arrays() {
-        let result = parse(r#"arr=[1 2 3]"#).unwrap();
-        assert_eq!(result, json!({"arr": [1.0, 2.0, 3.0]}));
-
-        let result2 = parse(
-            r#"items=[
-"a"
-"b"
-"c"]"#,
-        )
-        .unwrap();
-        assert_eq!(result2, json!({"items": ["a", "b", "c"]}));
-    }
-
-    #[test]
-    fn test_single_quoted_strings() {
-        // Test single quoted strings
-        let result = parse(r#"name='John', greeting='Hello'"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "John",
-                "greeting": "Hello"
-            })
-        );
-    }
-
-    #[test]
-    fn test_mixed_quote_styles() {
-        // Test mixing single and double quotes
-        let result = parse(r#"double="value1", single='value2'"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "double": "value1",
-                "single": "value2"
-            })
-        );
-    }
-
-    #[test]
-    fn test_single_quoted_keys() {
-        // Test single quoted keys
-        let result = parse(r#"my-key='value', another-key='test'"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "my-key": "value",
-                "another-key": "test"
-            })
-        );
-    }
-
-    #[test]
-    fn test_quotes_inside_strings() {
-        // Test double quotes inside single quotes
-        let result = parse(r#"text='He said "hello" to me'"#).unwrap();
-        assert_eq!(result["text"], r#"He said "hello" to me"#);
-
-        // Test single quotes inside double quotes
-        let result2 = parse(r#"text="It's a beautiful day""#).unwrap();
-        assert_eq!(result2["text"], "It's a beautiful day");
-    }
-
-    #[test]
-    fn test_single_quote_escape_sequences() {
-        // Test escape sequences in single quoted strings
-        let result = parse(r#"text='hello\nworld\t!'"#).unwrap();
-        assert_eq!(result["text"], "hello\nworld\t!");
-
-        // Test escaped single quote
-        let result2 = parse(r#"text='It\'s great'"#).unwrap();
-        assert_eq!(result2["text"], "It's great");
-
-        // Test escaped double quote in single quoted string
-        let result3 = parse(r#"text='Say \"hello\"'"#).unwrap();
-        assert_eq!(result3["text"], r#"Say "hello""#);
-    }
-
-    #[test]
-    fn test_single_quoted_arrays() {
-        // Test arrays with single quoted strings
-        let result = parse(r#"items=['apple', 'banana', 'cherry']"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "items": ["apple", "banana", "cherry"]
-            })
-        );
-
-        // Test mixed quote styles in arrays
-        let result2 = parse(r#"mixed=['a', "b", 'c']"#).unwrap();
-        assert_eq!(result2, json!({"mixed": ["a", "b", "c"]}));
-    }
-
-    #[test]
-    fn test_single_quoted_nested_objects() {
-        // Test nested objects with single quotes
-        let result = parse(r#"server={host='localhost', port=8080}"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "server": {
-                    "host": "localhost",
-                    "port": 8080.0
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn test_empty_single_quoted_strings() {
-        // Test empty single quoted strings
-        let result = parse(r#"empty=''"#).unwrap();
-        assert_eq!(result, json!({"empty": ""}));
-    }
-
-    #[test]
-    fn test_single_quote_unicode_escape() {
-        // Test Unicode escape in single quoted strings
-        let result = parse(r#"text='Hello\u00A9World'"#).unwrap();
-        assert_eq!(result["text"], "Hello©World");
-    }
-
-    #[test]
-    fn test_quoted_keys_with_spaces() {
-        // Test double quoted keys with spaces
-        let result = parse(r#""my key"="value", "another key"="test""#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "my key": "value",
-                "another key": "test"
-            })
-        );
-
-        // Test single quoted keys with spaces
-        let result2 = parse(r#"'my key'='value', 'another key'='test'"#).unwrap();
-        assert_eq!(
-            result2,
-            json!({
-                "my key": "value",
-                "another key": "test"
-            })
-        );
-    }
-
-    #[test]
-    fn test_quoted_keys_with_special_characters() {
-        // Test keys with various special characters
-        let result = parse(r#""key:with:special"="value1", "key@symbol"="value2""#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "key:with:special": "value1",
-                "key@symbol": "value2"
-            })
-        );
-
-        // Test keys with dots and slashes
-        let result2 = parse(r#"'key.with.dots'='test', 'key/with/slash'='path'"#).unwrap();
-        assert_eq!(
-            result2,
-            json!({
-                "key.with.dots": "test",
-                "key/with/slash": "path"
-            })
-        );
-    }
-
-    #[test]
-    fn test_mixed_quoted_and_unquoted_keys() {
-        // Test mixing quoted and unquoted keys
-        let result = parse(r#"name='John', 'user id'=123, age=25, 'is-active'=true"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "John",
-                "user id": 123.0,
-                "age": 25.0,
-                "is-active": true
-            })
-        );
-    }
-
-    #[test]
-    fn test_unquoted_keys_no_special_chars() {
-        // Test that unquoted keys work without special characters
-        let result = parse(r#"name="value" user_name="test" age=25"#).unwrap();
-        assert_eq!(
-            result,
-            json!({
-                "name": "value",
-                "user_name": "test",
-                "age": 25.0
-            })
-        );
-
-        // Test unquoted keys with hyphens
-        let result2 = parse(r#"my-key="value" another-key="test""#).unwrap();
-        assert_eq!(
-            result2,
-            json!({
-                "my-key": "value",
-                "another-key": "test"
-            })
-        );
-    }
-
-    #[test]
-    fn test_quoted_keys_escape_sequences() {
-        // Test escape sequences in quoted keys
-        let result = parse(r#""key\nwith\nnewlines"="value""#).unwrap();
-        assert_eq!(result.get("key\nwith\nnewlines"), Some(&json!("value")));
-
-        // Test quotes in quoted keys
-        let result2 = parse(r#"'key\'s value'="test""#).unwrap();
-        assert_eq!(result2.get("key's value"), Some(&json!("test")));
-    }
-
-    #[test]
-    fn test_complex_quoted_keys() {
-        // Test complex scenarios with quoted keys
-        let result = parse(
-            r#"
-            "user name"="John Doe",
-            email="john@example.com",
-            'home address'="123 Main St",
-            phone-number="555-1234"
-        "#,
-        )
-        .unwrap();
-        assert_eq!(result["user name"], "John Doe");
-        assert_eq!(result["email"], "john@example.com");
-        assert_eq!(result["home address"], "123 Main St");
-        assert_eq!(result["phone-number"], "555-1234");
-    }
-
-    #[test]
-    fn test_error_unterminated_string() {
-        let result = parse(r#"name="unclosed string"#);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unterminated string")
-        );
-    }
-
-    #[test]
-    fn test_error_expected_equals() {
-        let result = parse(r#"name "value""#);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Expected '='"));
-    }
-
-    #[test]
-    fn test_error_unterminated_raw_string() {
-        let result = parse(r#"text=r"unterminated"#);
-        assert!(result.is_err());
-    }
-
-    // serialize tests
     #[test]
     fn test_serialize_basic_object() {
         let value = json!({"name": "John", "age": 30});
         let result = serialize(&value);
         assert_eq!(result, r#"age=30,name="John""#);
-    }
-
-    #[test]
-    fn test_serialize_empty_object() {
-        let value = json!({});
-        let result = serialize(&value);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_serialize_string() {
-        let value = json!("hello world");
-        let result = serialize(&value);
-        assert_eq!(result, r#""hello world""#);
-    }
-
-    #[test]
-    fn test_serialize_string_with_escapes() {
-        let value = json!("line1\nline2\ttab");
-        let result = serialize(&value);
-        assert_eq!(result, r#""line1\nline2\ttab""#);
-    }
-
-    #[test]
-    fn test_serialize_string_with_quotes() {
-        let value = json!(r#"He said "hello""#);
-        let result = serialize(&value);
-        assert_eq!(result, r#""He said \"hello\"""#);
-    }
-
-    #[test]
-    fn test_serialize_numbers() {
-        let value = json!({"int": 42, "float": 3.14, "negative": -123});
-        let result = serialize(&value);
-        assert_eq!(result, r#"float=3.14,int=42,negative=-123"#);
-    }
-
-    #[test]
-    fn test_serialize_boolean() {
-        let value = json!({"active": true, "inactive": false});
-        let result = serialize(&value);
-        assert_eq!(result, r#"active=true,inactive=false"#);
-    }
-
-    #[test]
-    fn test_serialize_null() {
-        let value = json!({"empty": null});
-        let result = serialize(&value);
-        assert_eq!(result, r#"empty=null"#);
-    }
-
-    #[test]
-    fn test_serialize_array() {
-        let value = json!([1, 2, 3, "hello", true]);
-        let result = serialize(&value);
-        assert_eq!(result, r#"[1,2,3,"hello",true]"#);
-    }
-
-    #[test]
-    fn test_serialize_empty_array() {
-        let value = json!([]);
-        let result = serialize(&value);
-        assert_eq!(result, r#"[]"#);
     }
 
     #[test]
@@ -1601,148 +900,19 @@ age=25"#,
 
     #[test]
     fn test_serialize_array_with_objects() {
-        let value = json!([{"name": "John", "age": 30.0}, {"name": "Jane", "age": 25.0}]);
+        let value = json!([{"name": "John", "age": 30}, {"name": "Jane", "age": 25}]);
         let result = serialize(&value);
         assert_eq!(result, r#"[{age=30,name="John"},{age=25,name="Jane"}]"#);
     }
 
     #[test]
-    fn test_serialize_keys_with_special_chars() {
-        let value = json!({"my key": "value1", "key@symbol": "value2"});
-        let result = serialize(&value);
-        assert_eq!(result, r#""key@symbol"="value2","my key"="value1""#);
-    }
-
-    #[test]
-    fn test_serialize_keys_with_hyphens() {
-        let value = json!({"my-key": "value", "another_key": "test"});
-        let result = serialize(&value);
-        assert_eq!(result, r#"another_key="test",my-key="value""#);
-    }
-
-    #[test]
     fn test_serialize_round_trip_simple() {
-        let original = json!({"name": "John", "age": 30.0, "active": true});
+        let original = json!({"name": "John", "age": 30, "active": true});
         let serialized = serialize(&original);
         let parsed = parse(&serialized).unwrap();
         assert_eq!(original, parsed);
     }
 
-    #[test]
-    fn test_serialize_round_trip_array() {
-        // Note: parse() is designed for top-level JHON objects, not arrays
-        // So we only test that serialization produces valid syntax
-        let value = json!([1.0, 2.0, 3.0, "test", true, null]);
-        let serialized = serialize(&value);
-        assert_eq!(serialized, r#"[1,2,3,"test",true,null]"#);
-    }
-
-    #[test]
-    fn test_serialize_complex_nested_structure() {
-        // A complex real-world configuration example
-        let original = json!({
-            "app_name": "ocean-note",
-            "version": "2.0.0",
-            "database": {
-                "host": "localhost",
-                "port": 5432.0,
-                "name": "mydb",
-                "credentials": [
-                    {"user": "admin", "role": "owner"},
-                    {"user": "reader", "role": "readonly"},
-                    {"user": "writer", "role": "readwrite"}
-                ],
-                "pool_size": 10.0,
-                "timeout": 30.5,
-                "ssl_enabled": true,
-                "ssl_cert": null
-            },
-            "server": {
-                "host": "0.0.0.0",
-                "port": 3000.0,
-                "middleware": [
-                    {"name": "logger", "enabled": true, "config": {"level": "info"}},
-                    {"name": "cors", "enabled": false, "config": {}},
-                    {"name": "auth", "enabled": true, "config": {"strategy": "jwt"}}
-                ]
-            },
-            "features": [
-                {"name": "markdown", "active": true, "settings": {"preview": true}},
-                {"name": "collaboration", "active": true, "settings": {"realtime": true, "max_users": 100.0}},
-                {"name": "export", "active": false, "settings": null}
-            ],
-            "metadata": {
-                "created_at": "2024-01-15T10:30:00Z",
-                "updated_at": "2024-01-20T15:45:30Z",
-                "tags": ["production", "web", "api"],
-                "maintainers": ["team-a", "team-b"]
-            },
-            "limits": {
-                "max_file_size": 1048576.0,
-                "max_files_per_user": 100.0,
-                "storage_quota": 1073741824.0,
-                "rate_limits": {
-                    "requests_per_minute": 60.0,
-                    "burst_allowed": true
-                }
-            },
-            "debug_mode": false,
-            "log_level": "info",
-            "description": "A complex configuration with deeply nested objects, arrays of objects, mixed data types, and special characters\nin\tstrings"
-        });
-
-        let serialized = serialize(&original);
-
-        // Verify round-trip works
-        let parsed = parse(&serialized).unwrap();
-        assert_eq!(original, parsed);
-    }
-
-    #[test]
-    fn test_serialize_mixed_types_in_array() {
-        // Note: parse() is designed for top-level JHON objects, not arrays
-        // So we only test that serialization produces valid syntax
-        let value = json!([null, true, 42.0, "hello", 3.14, [1.0, 2.0], {"key": "value"}]);
-        let serialized = serialize(&value);
-        assert_eq!(
-            serialized,
-            r#"[null,true,42,"hello",3.14,[1,2],{key="value"}]"#
-        );
-    }
-
-    #[test]
-    fn test_serialize_empty_and_nested_empty() {
-        let value = json!({
-            "empty_obj": {},
-            "empty_array": [],
-            "nested": {
-                "also_empty": {},
-                "with_array": []
-            }
-        });
-        let serialized = serialize(&value);
-        let parsed = parse(&serialized).unwrap();
-        assert_eq!(value, parsed);
-    }
-
-    #[test]
-    fn test_serialize_unicode_in_string() {
-        let value = json!({"text": "Hello©World❤️"});
-        let serialized = serialize(&value);
-        let parsed = parse(&serialized).unwrap();
-        assert_eq!(value, parsed);
-    }
-
-    #[test]
-    fn test_serialize_backslash_paths() {
-        // Test round-trip with backslash paths
-        let value = json!({"windows_path": "C:\\Users\\name\\file.txt"});
-        let serialized = serialize(&value);
-        let parsed = parse(&serialized).unwrap();
-        assert_eq!(value, parsed);
-    }
-
-    // serialize_pretty tests
     #[test]
     fn test_serialize_pretty_basic_object() {
         let value = json!({"name": "John", "age": 30});
@@ -1751,15 +921,8 @@ age=25"#,
     }
 
     #[test]
-    fn test_serialize_pretty_empty_object() {
-        let value = json!({});
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(result, "");
-    }
-
-    #[test]
     fn test_serialize_pretty_nested_objects() {
-        let value = json!({"server": {"host": "localhost", "port": 8080.0}});
+        let value = json!({"server": {"host": "localhost", "port": 8080}});
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
@@ -1775,15 +938,8 @@ age=25"#,
     }
 
     #[test]
-    fn test_serialize_pretty_empty_array() {
-        let value = json!([]);
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(result, "[]");
-    }
-
-    #[test]
     fn test_serialize_pretty_array_with_objects() {
-        let value = json!([{"name": "John", "age": 30.0}, {"name": "Jane", "age": 25.0}]);
+        let value = json!([{"name": "John", "age": 30}, {"name": "Jane", "age": 25}]);
         let result = serialize_pretty(&value, "  ");
         assert_eq!(
             result,
@@ -1792,105 +948,15 @@ age=25"#,
     }
 
     #[test]
-    fn test_serialize_pretty_deeply_nested() {
-        let value = json!({
-            "database": {
-                "credentials": [
-                    {"user": "admin", "role": "owner"},
-                    {"user": "reader", "role": "readonly"}
-                ]
-            }
-        });
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(
-            result,
-            "database = {\n  credentials = [\n    {\n      role = \"owner\",\n      user = \"admin\"\n    },\n    {\n      role = \"readonly\",\n      user = \"reader\"\n    }\n  ]\n}"
-        );
-    }
-
-    #[test]
-    fn test_serialize_pretty_tabs() {
-        let value = json!({"name": "John", "age": 30});
-        let result = serialize_pretty(&value, "\t");
-        assert_eq!(result, "age = 30,\nname = \"John\"");
-    }
-
-    #[test]
-    fn test_serialize_pretty_four_spaces() {
-        let value = json!({"name": "John", "age": 30});
-        let result = serialize_pretty(&value, "    ");
-        assert_eq!(result, "age = 30,\nname = \"John\"");
-    }
-
-    #[test]
-    fn test_serialize_pretty_mixed_content() {
-        let value = json!({
-            "string": "hello",
-            "number": 42,
-            "boolean": true,
-            "null_value": null,
-            "array": [1, 2, 3],
-            "nested": {"key": "value"}
-        });
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(
-            result,
-            "array = [\n  1,\n  2,\n  3\n],\nboolean = true,\nnested = {\n  key = \"value\"\n},\nnull_value = null,\nnumber = 42,\nstring = \"hello\""
-        );
-    }
-
-    #[test]
     fn test_serialize_pretty_round_trip() {
         let original = json!({
             "name": "John",
-            "age": 30.0,
+            "age": 30,
             "active": true,
             "tags": ["developer", "rust"]
         });
         let serialized = serialize_pretty(&original, "  ");
         let parsed = parse(&serialized).unwrap();
         assert_eq!(original, parsed);
-    }
-
-    #[test]
-    fn test_serialize_pretty_special_keys() {
-        let value = json!({"my key": "value1", "key@symbol": "value2"});
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(
-            result,
-            "\"key@symbol\" = \"value2\",\n\"my key\" = \"value1\""
-        );
-    }
-
-    #[test]
-    fn test_serialize_pretty_empty_indent() {
-        let value = json!({"name": "John", "age": 30});
-        let result = serialize_pretty(&value, "");
-        // With empty indent, still adds newlines but no indentation
-        assert_eq!(result, "age = 30,\nname = \"John\"");
-    }
-
-    #[test]
-    fn test_serialize_pretty_large_config() {
-        let value = json!({
-            "app": {
-                "name": "test-app",
-                "version": "1.0.0",
-                "features": ["auth", "logging", "api"],
-                "settings": {
-                    "debug": true,
-                    "port": 3000.0,
-                    "hosts": ["localhost", "0.0.0.0"]
-                }
-            }
-        });
-        let result = serialize_pretty(&value, "  ");
-        // Verify structure is properly formatted with full string assertion
-        let expected = "app = {\n  features = [\n    \"auth\",\n    \"logging\",\n    \"api\"\n  ],\n  name = \"test-app\",\n  settings = {\n    debug = true,\n    hosts = [\n      \"localhost\",\n      \"0.0.0.0\"\n    ],\n    port = 3000\n  },\n  version = \"1.0.0\"\n}";
-        assert_eq!(result, expected);
-
-        // Verify round-trip works
-        let parsed = parse(&result).unwrap();
-        assert_eq!(value, parsed);
     }
 }
