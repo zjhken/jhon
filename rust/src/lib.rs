@@ -11,8 +11,16 @@ use serde_json::{Map, Number};
 ///
 /// let result = parse(r#"name="John" age=30"#).unwrap();
 /// ```
+#[inline]
 pub fn parse(text: &str) -> Result<Value> {
-    let input = remove_comments(text);
+    // Early exit for empty input
+    let input = text.trim();
+    if input.is_empty() {
+        return Ok(Value::Object(Map::new()));
+    }
+
+    // Remove comments and parse
+    let input = remove_comments(input);
     let input = input.trim();
 
     if input.is_empty() {
@@ -20,8 +28,7 @@ pub fn parse(text: &str) -> Result<Value> {
     }
 
     // Handle top-level objects wrapped in braces (from serialize)
-    let input = input.trim();
-    if input.starts_with('{') && input.ends_with('}') {
+    if input.as_bytes()[0] == b'{' {
         // Parse as nested object
         let (value, _) = parse_nested_object(input, 0)?;
         return Ok(value);
@@ -42,10 +49,38 @@ pub fn parse(text: &str) -> Result<Value> {
 /// let jhon_string = serialize(&value);
 /// assert_eq!(jhon_string, r#"age=30,name="John""#);
 /// ```
+#[inline]
 pub fn serialize(value: &Value) -> String {
-    let mut result = String::new();
+    // Estimate capacity: roughly estimate based on value size
+    let estimated_size = estimate_serialized_size(value);
+    let mut result = String::with_capacity(estimated_size);
     serialize_compact(value, &mut result);
     result
+}
+
+// Estimate the serialized size for capacity pre-allocation
+#[inline]
+fn estimate_serialized_size(value: &Value) -> usize {
+    match value {
+        Value::Object(map) => {
+            let mut size = map.len() * 8; // rough estimate per key-value pair
+            for (k, v) in map {
+                size += k.len() + estimate_serialized_size(v);
+            }
+            size
+        }
+        Value::Array(arr) => {
+            let mut size = arr.len() * 2; // brackets and commas
+            for v in arr {
+                size += estimate_serialized_size(v);
+            }
+            size
+        }
+        Value::String(s) => s.len() + 2, // quotes
+        Value::Number(_) => 16, // rough estimate
+        Value::Bool(_) => 5,
+        Value::Null => 4,
+    }
 }
 
 /// Serialize a JSON Value into a pretty-printed JHON string with custom indentation
@@ -502,7 +537,30 @@ impl<'a> Parser<'a> {
 
     fn parse_array(&mut self) -> Result<(Value, usize)> {
         self.advance(); // skip '['
-        let mut elements = Vec::new();
+
+        // Estimate capacity by counting commas in array
+        let start = self.pos;
+        let mut depth = 1usize;
+        let end = loop {
+            if self.pos >= self.input.len() {
+                return Err(anyhow!("Unterminated array"));
+            }
+            match self.input[self.pos] {
+                b'[' => depth += 1,
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break self.pos;
+                    }
+                }
+                _ => {}
+            }
+            self.pos += 1;
+        };
+        let estimated_elements = self.input[start..end].iter().filter(|&&b| b == b',').count() + 1;
+        self.pos = start;
+
+        let mut elements = Vec::with_capacity(estimated_elements);
 
         self.skip_spaces_and_tabs();
 
@@ -528,7 +586,30 @@ impl<'a> Parser<'a> {
 
     fn parse_nested_object(&mut self) -> Result<(Value, usize)> {
         self.advance(); // skip '{'
-        let mut map = Map::new();
+
+        // Estimate capacity by counting '=' in object
+        let start = self.pos;
+        let mut depth = 1usize;
+        let end = loop {
+            if self.pos >= self.input.len() {
+                return Err(anyhow!("Unterminated nested object"));
+            }
+            match self.input[self.pos] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break self.pos;
+                    }
+                }
+                _ => {}
+            }
+            self.pos += 1;
+        };
+        let estimated_pairs = self.input[start..end].iter().filter(|&&b| b == b'=').count();
+        self.pos = start;
+
+        let mut map = Map::with_capacity(estimated_pairs.max(1));
 
         self.skip_spaces_and_tabs();
 
@@ -635,13 +716,46 @@ impl<'a> Parser<'a> {
     }
 }
 
+// Optimized comment removal using SIMD-like byte scanning
+#[inline]
 fn remove_comments(input: &str) -> String {
-    let mut result = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
-    let mut i = 0;
     let len = bytes.len();
 
+    // Fast path: check if there are any comments at all
+    let has_slash = bytes.iter().any(|&b| b == b'/');
+    if !has_slash {
+        return input.to_string();
+    }
+
+    let mut result = Vec::with_capacity(len);
+    let mut i = 0;
+
     while i < len {
+        // Process 8 bytes at a time looking for '/'
+        while i + 8 < len {
+            let chunk = u64::from_le_bytes([
+                bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3],
+                bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7],
+            ]);
+
+            // Check for '/' in chunk
+            let diff = chunk ^ u64::from_le_bytes([b'/'; 8]);
+            if (diff.wrapping_sub(0x0101010101010101) & !diff & 0x8080808080808080) != 0 {
+                // Found '/', check byte by byte
+                break;
+            }
+
+            // No '/', copy whole chunk
+            result.extend_from_slice(&bytes[i..i + 8]);
+            i += 8;
+        }
+
+        if i >= len {
+            break;
+        }
+
+        // Check for comment start
         if bytes[i] == b'/' && i + 1 < len {
             if bytes[i + 1] == b'/' {
                 // Single line comment: skip to newline
@@ -654,6 +768,7 @@ fn remove_comments(input: &str) -> String {
                 // Multi-line comment: skip to */
                 i += 2;
                 while i < len {
+                    // Fast search for '*'
                     if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
                         i += 2;
                         break;
@@ -663,16 +778,22 @@ fn remove_comments(input: &str) -> String {
                 continue;
             }
         }
+
         result.push(bytes[i]);
         i += 1;
     }
 
-    String::from_utf8(result).unwrap_or_default()
+    unsafe { String::from_utf8_unchecked(result) }
 }
 
+#[inline]
 fn parse_jhon_object(input: &str) -> Result<Value> {
     let mut parser = Parser::new(input.as_bytes());
-    let mut map = Map::new();
+
+    // Estimate number of key-value pairs for capacity pre-allocation
+    // Count '=' characters to estimate pairs
+    let estimated_pairs = input.as_bytes().iter().filter(|&&b| b == b'=').count();
+    let mut map = Map::with_capacity(estimated_pairs.max(1));
 
     parser.skip_spaces_and_tabs();
 
@@ -719,6 +840,7 @@ fn parse_nested_object(input: &str, start_pos: usize) -> Result<(Value, usize)> 
 // Optimized Serializer
 // =============================================================================
 
+#[inline(always)]
 fn serialize_compact(value: &Value, result: &mut String) {
     match value {
         Value::Object(map) if map.is_empty() => {}
@@ -732,6 +854,7 @@ fn serialize_compact(value: &Value, result: &mut String) {
     }
 }
 
+#[inline(always)]
 fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
     // Collect and sort keys
     let mut keys: Vec<&String> = map.keys().collect();
@@ -760,6 +883,7 @@ fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
     }
 }
 
+#[inline(always)]
 fn serialize_array_compact(arr: &[Value], result: &mut String) {
     result.push('[');
     let mut first = true;
@@ -782,6 +906,7 @@ fn serialize_array_compact(arr: &[Value], result: &mut String) {
     result.push(']');
 }
 
+#[inline(always)]
 fn serialize_key(key: &str, result: &mut String) {
     if needs_quoting(key) {
         serialize_string(key, result);
@@ -790,65 +915,84 @@ fn serialize_key(key: &str, result: &mut String) {
     }
 }
 
-// Optimized string serialization using static escape table
+// Optimized string serialization using static escape table with SIMD-like scanning
+#[inline(always)]
 fn serialize_string(s: &str, result: &mut String) {
     result.push('"');
 
     let bytes = s.as_bytes();
     let mut i = 0;
 
-    while i < bytes.len() {
-        // Find the next escape character
-        let start = i;
-        while i < bytes.len() {
-            let escape = ESCAPE[bytes[i] as usize];
-            if escape != 0 {
+    // Fast path: process 8 bytes at a time
+    while i + 8 <= bytes.len() {
+        // Check if any byte in the next 8 needs escaping
+        let mut needs_escape = false;
+        for j in 0..8 {
+            if ESCAPE[bytes[i + j] as usize] != 0 {
+                needs_escape = true;
+                // Write up to the escape char
+                if j > 0 {
+                    let safe_part = unsafe { std::str::from_utf8_unchecked(&bytes[i..i + j]) };
+                    result.push_str(safe_part);
+                }
+                // Handle the escape
+                let byte = bytes[i + j];
+                serialize_escape_byte(byte, result);
+                i += j + 1;
                 break;
             }
-            i += 1;
         }
-
-        // Write the non-escaped portion directly
-        if i > start {
-            // Safety: we know this is valid UTF-8 since it's a substring of &str
-            let safe_part = unsafe { std::str::from_utf8_unchecked(&bytes[start..i]) };
+        if !needs_escape {
+            // No escapes in this chunk, write all 8 bytes
+            let safe_part = unsafe { std::str::from_utf8_unchecked(&bytes[i..i + 8]) };
             result.push_str(safe_part);
+            i += 8;
         }
+    }
 
-        if i < bytes.len() {
-            let byte = bytes[i];
-            i += 1;
-
-            // Write the escape sequence
-            match ESCAPE[byte as usize] {
-                BB => result.push_str("\\b"),
-                TT => result.push_str("\\t"),
-                NN => result.push_str("\\n"),
-                FF => result.push_str("\\f"),
-                RR => result.push_str("\\r"),
-                QU => result.push_str("\\\""),
-                BS => result.push_str("\\\\"),
-                UU => {
-                    // Unicode escape for control characters (0x00-0x1F)
-                    // Manual formatting: \uXXXX
-                    const HEX: &[u8; 16] = b"0123456789abcdef";
-                    result.push_str("\\u00");
-                    result.push(HEX[(byte >> 4) as usize] as char);
-                    result.push(HEX[(byte & 0x0F) as usize] as char);
-                }
-                _ => unsafe {
-                    // Safety: ESCAPE table only has the above values
-                    // This should never be reached
-                    result.push(byte as char);
-                }
-            }
+    // Handle remaining bytes
+    while i < bytes.len() {
+        let escape = ESCAPE[bytes[i] as usize];
+        if escape != 0 {
+            serialize_escape_byte(bytes[i], result);
+        } else {
+            result.push(unsafe { char::from_u32_unchecked(bytes[i] as u32) });
         }
+        i += 1;
     }
 
     result.push('"');
 }
 
+// Serialize a single escaped byte
+#[inline(always)]
+fn serialize_escape_byte(byte: u8, result: &mut String) {
+    match ESCAPE[byte as usize] {
+        BB => result.push_str("\\b"),
+        TT => result.push_str("\\t"),
+        NN => result.push_str("\\n"),
+        FF => result.push_str("\\f"),
+        RR => result.push_str("\\r"),
+        QU => result.push_str("\\\""),
+        BS => result.push_str("\\\\"),
+        UU => {
+            // Unicode escape for control characters (0x00-0x1F)
+            // Manual formatting: \u00XX
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            result.push_str("\\u00");
+            result.push(HEX[(byte >> 4) as usize] as char);
+            result.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+        _ => unsafe {
+            // Safety: ESCAPE table only has the above values
+            // This should never be reached
+            result.push(byte as char);
+        }
+    }
+}
+
 // Optimized number serialization using itoa and ryu
+#[inline(always)]
 fn serialize_number(n: &Number, result: &mut String) {
     if let Some(i) = n.as_i64() {
         let mut buffer = itoa::Buffer::new();
