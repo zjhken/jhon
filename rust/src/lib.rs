@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use serde_json::{Map, Number};
-use std::fmt::Write;
 
 /// Parse a Jhon config string into a JSON Value
 ///
@@ -66,6 +65,42 @@ pub fn serialize_pretty(value: &Value, indent: &str) -> String {
     serialize_pretty_with_depth(value, indent, 0, false, &mut result);
     result
 }
+
+// =============================================================================
+// Static Escape Table (from serde_json)
+// =============================================================================
+
+const BB: u8 = b'b';   // \\x08
+const TT: u8 = b't';   // \\x09
+const NN: u8 = b'n';   // \\x0A
+const FF: u8 = b'f';   // \\x0C
+const RR: u8 = b'r';   // \\x0D
+const QU: u8 = b'"';   // \\x22
+const BS: u8 = b'\\';  // \\x5C
+const UU: u8 = b'u';   // \\x00...\\x1F except the ones above
+const __: u8 = 0;      // No escape needed
+
+// Lookup table of escape sequences. A value of b'x' at index i means that byte
+// i is escaped as "\x" in JSON. A value of 0 means that byte i is not escaped.
+static ESCAPE: [u8; 256] = [
+    //   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+    UU, UU, UU, UU, UU, UU, UU, UU, BB, TT, NN, UU, FF, RR, UU, UU, // 0
+    UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, UU, // 1
+    __, __, QU, __, __, __, __, __, __, __, __, __, __, __, __, __, // 2
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 3
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 4
+    __, __, __, __, __, __, __, __, __, __, __, __, BS, __, __, __, // 5
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 6
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 7
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 8
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // 9
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // A
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // B
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // C
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // D
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // E
+    __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
+];
 
 // =============================================================================
 // Optimized Parser
@@ -162,7 +197,7 @@ impl<'a> Parser<'a> {
                     b'\\' => '\\',
                     b'"' | b'\'' => escaped as char,
                     b'u' => {
-                        // Parse 4 hex digits
+                        // Parse 4 hex digits - optimized hex parsing
                         let mut code = 0u16;
                         for _ in 0..4 {
                             let h = self.advance().ok_or_else(|| anyhow!("Incomplete Unicode escape"))?;
@@ -590,39 +625,79 @@ fn serialize_key(key: &str, result: &mut String) {
     }
 }
 
+// Optimized string serialization using static escape table
 fn serialize_string(s: &str, result: &mut String) {
     result.push('"');
 
-    for c in s.chars() {
-        match c {
-            '\\' => result.push_str("\\\\"),
-            '"' => result.push_str("\\\""),
-            '\n' => result.push_str("\\n"),
-            '\r' => result.push_str("\\r"),
-            '\t' => result.push_str("\\t"),
-            '\u{08}' => result.push_str("\\b"),
-            '\u{0c}' => result.push_str("\\f"),
-            _ if c < ' ' => {
-                // Unicode escape for control characters
-                let _ = write!(result, "\\u{:04x}", c as u32);
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Find the next escape character
+        let start = i;
+        while i < bytes.len() {
+            let escape = ESCAPE[bytes[i] as usize];
+            if escape != 0 {
+                break;
             }
-            _ => result.push(c),
+            i += 1;
+        }
+
+        // Write the non-escaped portion directly
+        if i > start {
+            // Safety: we know this is valid UTF-8 since it's a substring of &str
+            let safe_part = unsafe { std::str::from_utf8_unchecked(&bytes[start..i]) };
+            result.push_str(safe_part);
+        }
+
+        if i < bytes.len() {
+            let byte = bytes[i];
+            i += 1;
+
+            // Write the escape sequence
+            match ESCAPE[byte as usize] {
+                BB => result.push_str("\\b"),
+                TT => result.push_str("\\t"),
+                NN => result.push_str("\\n"),
+                FF => result.push_str("\\f"),
+                RR => result.push_str("\\r"),
+                QU => result.push_str("\\\""),
+                BS => result.push_str("\\\\"),
+                UU => {
+                    // Unicode escape for control characters (0x00-0x1F)
+                    // Manual formatting: \uXXXX
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    result.push_str("\\u00");
+                    result.push(HEX[(byte >> 4) as usize] as char);
+                    result.push(HEX[(byte & 0x0F) as usize] as char);
+                }
+                _ => unsafe {
+                    // Safety: ESCAPE table only has the above values
+                    // This should never be reached
+                    result.push(byte as char);
+                }
+            }
         }
     }
 
     result.push('"');
 }
 
+// Optimized number serialization using itoa and ryu
 fn serialize_number(n: &Number, result: &mut String) {
     if let Some(i) = n.as_i64() {
-        let _ = write!(result, "{}", i);
+        let mut buffer = itoa::Buffer::new();
+        result.push_str(buffer.format(i));
     } else if let Some(u) = n.as_u64() {
-        let _ = write!(result, "{}", u);
+        let mut buffer = itoa::Buffer::new();
+        result.push_str(buffer.format(u));
     } else if let Some(f) = n.as_f64() {
         if f.fract() == 0.0 {
-            let _ = write!(result, "{}", f as i64);
+            let mut buffer = itoa::Buffer::new();
+            result.push_str(buffer.format(f as i64));
         } else {
-            let _ = write!(result, "{}", f);
+            let mut buffer = ryu::Buffer::new();
+            result.push_str(buffer.format_finite(f));
         }
     } else {
         result.push_str("0");

@@ -19,6 +19,8 @@ name = "jhon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "itoa",
+ "ryu",
  "serde_json",
 ]
 
@@ -45,6 +47,12 @@ checksum = "dc74d9a594b72ae6656596548f56f667211f8a97b3d4c3d467150794690dc40a"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "ryu"
+version = "1.0.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
 name = "serde"
