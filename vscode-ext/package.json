@@ -2,7 +2,7 @@
   "name": "jhon-syntax-highlight",
   "displayName": "JHON (JinHui's Object Notation) Language Support",
   "description": "Syntax highlighting and formatting for JHON (JinHui's Object Notation) - A flexible configuration format",
-  "version": "1.0.1",
+  "version": "1.2.1",
   "publisher": "Jinhui-ZHANG",
   "icon": "icon.png",
   "engines": {
