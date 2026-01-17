@@ -8,6 +8,10 @@
   "engines": {
     "vscode": "^1.107.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zjhken/jhon.git"
+  },
   "categories": [
     "Programming Languages",
     "Formatters"
@@ -26,17 +30,26 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-    "languages": [{
-      "id": "jhon",
-      "aliases": ["JHON", "jhon"],
-      "extensions": [".jhon"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "jhon",
-      "scopeName": "source.jhon",
-      "path": "./syntaxes/jhon.tmLanguage.json"
-    }],
+    "languages": [
+      {
+        "id": "jhon",
+        "aliases": [
+          "JHON",
+          "jhon"
+        ],
+        "extensions": [
+          ".jhon"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "jhon",
+        "scopeName": "source.jhon",
+        "path": "./syntaxes/jhon.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "JHON",
       "properties": {
@@ -74,10 +87,18 @@
         },
         "jhon.format.quoteStyle": {
           "type": "string",
-          "enum": ["double", "single", "auto"],
+          "enum": [
+            "double",
+            "single",
+            "auto"
+          ],
           "default": "auto",
           "description": "Quote style for strings",
-          "enumDescriptions": ["Always use double quotes", "Always use single quotes", "Preserve existing quotes"]
+          "enumDescriptions": [
+            "Always use double quotes",
+            "Always use single quotes",
+            "Preserve existing quotes"
+          ]
         }
       }
     }
