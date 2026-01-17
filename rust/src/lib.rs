@@ -1,4 +1,8 @@
 use anyhow::{Result, anyhow};
+use serde::{
+    de::{self, Deserialize, Deserializer},
+    ser::{Serialize, Serializer},
+};
 use serde_json::Value;
 use serde_json::{Map, Number};
 
@@ -99,6 +103,178 @@ pub fn serialize_pretty(value: &Value, indent: &str) -> String {
     let mut result = String::new();
     serialize_pretty_with_depth(value, indent, 0, false, &mut result);
     result
+}
+
+// =============================================================================
+// Serde Support
+// =============================================================================
+
+/// Wrapper type for serializing/deserializing arbitrary types with JHON format.
+///
+/// # Example
+///
+/// ```
+/// use jhon::Jhon;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Serialize, Deserialize, PartialEq)]
+/// struct Config {
+///     name: String,
+///     age: u32,
+///     active: bool,
+/// }
+///
+/// let config = Config {
+///     name: "John".to_string(),
+///     age: 30,
+///     active: true,
+/// };
+///
+/// // Serialize to JHON
+/// let jhon_string = Jhon::to_string(&config).unwrap();
+///
+/// // Deserialize from JHON
+/// let decoded: Config = Jhon::from_str(&jhon_string).unwrap();
+/// assert_eq!(config, decoded);
+/// ```
+pub struct Jhon;
+
+impl Jhon {
+    /// Serialize a type `T` to a JHON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_string<T: Serialize>(value: &T) -> Result<String> {
+        let value = serde_json::to_value(value)?;
+        Ok(serialize(&value))
+    }
+
+    /// Serialize a type `T` to a pretty-printed JHON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_string_pretty<T: Serialize>(value: &T, indent: &str) -> Result<String> {
+        let value = serde_json::to_value(value)?;
+        Ok(serialize_pretty(&value, indent))
+    }
+
+    /// Deserialize a type `T` from a JHON string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing or deserialization fails.
+    pub fn from_str<'de, T: Deserialize<'de>>(s: &'de str) -> Result<T> {
+        let value = parse(s)?;
+        T::deserialize(value).map_err(|e| anyhow!("Deserialization error: {}", e))
+    }
+
+    /// Deserialize a type `T` from a JHON string with a custom deserializer.
+    ///
+    /// This allows for more control over the deserialization process.
+    pub fn from_str_with_deserializer<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T> {
+        T::deserialize(deserializer).map_err(|e| anyhow!("Deserialization error: {}", e))
+    }
+}
+
+/// A wrapper that can be used with `#[serde(with = "jhon")]` to serialize/deserialize
+/// fields using JHON format.
+///
+/// # Example
+///
+/// ```
+/// use jhon::jhon;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct ConfigData {
+///     name: String,
+///     value: i32,
+/// }
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct MyStruct {
+///     #[serde(with = "jhon")]
+///     config: ConfigData,
+/// }
+/// ```
+pub mod jhon {
+    use super::*;
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let jhon_string = Jhon::to_string(value).map_err(serde::ser::Error::custom)?;
+        jhon_string.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T, D::Error> {
+        // First deserialize to a Value (serde_json::Value), then convert to target type
+        let json_value = serde_json::Value::deserialize(deserializer)?;
+        // Convert the JSON Value to our target type
+        T::deserialize(json_value).map_err(de::Error::custom)
+    }
+}
+
+/// Deserialize a JHON string into any type that implements `Deserialize`.
+///
+/// This is a convenience function that uses the `Jhon` wrapper internally.
+///
+/// # Example
+///
+/// ```
+/// use jhon::from_str;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Deserialize, PartialEq)]
+/// struct Config {
+///     name: String,
+///     age: u32,
+/// }
+///
+/// let jhon_str = r#"name="John",age=30"#;
+/// let config: Config = from_str(jhon_str).unwrap();
+/// assert_eq!(config.name, "John");
+/// assert_eq!(config.age, 30);
+/// ```
+pub fn from_str<'de, T: Deserialize<'de>>(s: &'de str) -> Result<T> {
+    Jhon::from_str(s)
+}
+
+/// Serialize any type that implements `Serialize` into a JHON string.
+///
+/// This is a convenience function that uses the `Jhon` wrapper internally.
+///
+/// # Example
+///
+/// ```
+/// use jhon::to_string;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Serialize, Deserialize, PartialEq)]
+/// struct Config {
+///     name: String,
+///     age: u32,
+/// }
+///
+/// let config = Config { name: "John".to_string(), age: 30 };
+/// let jhon_str = to_string(&config).unwrap();
+/// ```
+pub fn to_string<T: Serialize>(value: &T) -> Result<String> {
+    Jhon::to_string(value)
+}
+
+/// Serialize any type that implements `Serialize` into a pretty-printed JHON string.
+///
+/// This is a convenience function that uses the `Jhon` wrapper internally.
+pub fn to_string_pretty<T: Serialize>(value: &T, indent: &str) -> Result<String> {
+    Jhon::to_string_pretty(value, indent)
 }
 
 // =============================================================================
@@ -1342,5 +1518,284 @@ mod tests {
         let serialized = serialize_pretty(&original, "  ");
         let parsed = parse(&serialized).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    // =============================================================================
+    // Serde Integration Tests
+    // =============================================================================
+
+    #[test]
+    fn test_serde_serialize_struct() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            age: u32,
+            active: bool,
+        }
+
+        let config = Config {
+            name: "John".to_string(),
+            age: 30,
+            active: true,
+        };
+
+        let jhon_string = to_string(&config).unwrap();
+        // Keys are sorted alphabetically
+        assert_eq!(jhon_string, r#"active=true,age=30,name="John""#);
+    }
+
+    #[test]
+    fn test_serde_deserialize_struct() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            age: u32,
+            active: bool,
+        }
+
+        let jhon_str = r#"name="John",age=30,active=true"#;
+        let config: Config = from_str(jhon_str).unwrap();
+        assert_eq!(config.name, "John");
+        assert_eq!(config.age, 30);
+        assert_eq!(config.active, true);
+    }
+
+    #[test]
+    fn test_serde_round_trip_struct() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Person {
+            name: String,
+            age: u32,
+            email: String,
+        }
+
+        let original = Person {
+            name: "Alice".to_string(),
+            age: 25,
+            email: "alice@example.com".to_string(),
+        };
+
+        let serialized = to_string(&original).unwrap();
+        let deserialized: Person = from_str(&serialized).unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_serde_serialize_nested_struct() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct ServerConfig {
+            host: String,
+            port: u16,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct AppConfig {
+            name: String,
+            server: ServerConfig,
+        }
+
+        let config = AppConfig {
+            name: "MyApp".to_string(),
+            server: ServerConfig {
+                host: "localhost".to_string(),
+                port: 8080,
+            },
+        };
+
+        let jhon_string = to_string(&config).unwrap();
+        assert_eq!(jhon_string, r#"name="MyApp",server={host="localhost",port=8080}"#);
+    }
+
+    #[test]
+    fn test_serde_deserialize_nested_struct() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct ServerConfig {
+            host: String,
+            port: u16,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct AppConfig {
+            name: String,
+            server: ServerConfig,
+        }
+
+        let jhon_str = r#"name="MyApp",server={host="localhost",port=8080}"#;
+        let config: AppConfig = from_str(jhon_str).unwrap();
+        assert_eq!(config.name, "MyApp");
+        assert_eq!(config.server.host, "localhost");
+        assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn test_serde_serialize_with_arrays() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            tags: Vec<String>,
+            scores: Vec<i32>,
+        }
+
+        let config = Config {
+            tags: vec!["rust".to_string(), "web".to_string()],
+            scores: vec![100, 95, 88],
+        };
+
+        let jhon_string = to_string(&config).unwrap();
+        assert_eq!(jhon_string, r#"scores=[100,95,88],tags=["rust","web"]"#);
+    }
+
+    #[test]
+    fn test_serde_deserialize_with_arrays() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            tags: Vec<String>,
+            scores: Vec<i32>,
+        }
+
+        let jhon_str = r#"tags=["rust","web"],scores=[100,95,88]"#;
+        let config: Config = from_str(jhon_str).unwrap();
+        assert_eq!(config.tags, vec!["rust", "web"]);
+        assert_eq!(config.scores, vec![100, 95, 88]);
+    }
+
+    #[test]
+    fn test_serde_serialize_with_option() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            description: Option<String>,
+        }
+
+        let config = Config {
+            name: "Test".to_string(),
+            description: Some("A test config".to_string()),
+        };
+
+        let jhon_string = to_string(&config).unwrap();
+        assert_eq!(jhon_string, r#"description="A test config",name="Test""#);
+    }
+
+    #[test]
+    fn test_serde_deserialize_with_option_none() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            description: Option<String>,
+        }
+
+        let jhon_str = r#"name="Test""#;
+        let config: Config = from_str(jhon_str).unwrap();
+        assert_eq!(config.name, "Test");
+        assert_eq!(config.description, None);
+    }
+
+    #[test]
+    fn test_jhon_wrapper_to_string() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        let point = Point { x: 10, y: 20 };
+        let jhon_string = Jhon::to_string(&point).unwrap();
+        assert_eq!(jhon_string, r#"x=10,y=20"#);
+    }
+
+    #[test]
+    fn test_jhon_wrapper_from_str() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        let jhon_str = r#"x=10,y=20"#;
+        let point: Point = Jhon::from_str(jhon_str).unwrap();
+        assert_eq!(point.x, 10);
+        assert_eq!(point.y, 20);
+    }
+
+    #[test]
+    fn test_serde_pretty_print() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            age: u32,
+        }
+
+        let config = Config {
+            name: "John".to_string(),
+            age: 30,
+        };
+
+        let jhon_string = to_string_pretty(&config, "  ").unwrap();
+        assert_eq!(jhon_string, "age = 30,\nname = \"John\"");
+    }
+
+    #[test]
+    fn test_serde_with_enum() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        enum Status {
+            Active,
+            Inactive,
+            Pending,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Task {
+            name: String,
+            status: Status,
+        }
+
+        let task = Task {
+            name: "Task1".to_string(),
+            status: Status::Active,
+        };
+
+        let jhon_string = to_string(&task).unwrap();
+        assert_eq!(jhon_string, r#"name="Task1",status="Active""#);
+
+        let decoded: Task = from_str(&jhon_string).unwrap();
+        assert_eq!(decoded, task);
+    }
+
+    #[test]
+    fn test_all_original_tests_still_pass() {
+        // Ensure all original parse tests still work
+        let result = parse(r#"a="hello", b=123.45"#).unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "a": "hello",
+                "b": 123.45
+            })
+        );
     }
 }
