@@ -3,6 +3,8 @@ name = "jhon"
 description = "JinHui's Object Notation language, basically it's design for config file"
 version = "1.0.0"
 edition = "2024"
+license = "MIT"
+license-file = "LICENSE"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
