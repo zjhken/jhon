@@ -16,7 +16,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			const options: FormatOptions = {
-				insertSpaces: config.get<boolean>('insertSpaces', true),
+				insertSpaces: config.get<boolean>('insertSpaces', false),
 				tabSize: config.get<number>('tabSize', 2),
 				sortKeys: config.get<boolean>('sortKeys', true),
 				trailingCommas: config.get<boolean>('trailingCommas', false),
@@ -57,7 +57,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			const options: FormatOptions = {
-				insertSpaces: config.get<boolean>('insertSpaces', true),
+				insertSpaces: config.get<boolean>('insertSpaces', false),
 				tabSize: config.get<number>('tabSize', 2),
 				sortKeys: config.get<boolean>('sortKeys', true),
 				trailingCommas: config.get<boolean>('trailingCommas', false),

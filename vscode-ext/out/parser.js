@@ -266,16 +266,33 @@ class JhonParser {
         if (text[pos] === '-') {
             pos++;
         }
-        while (pos < text.length && /\d/.test(text[pos])) {
+        // Parse digits (allowing underscores as digit separators)
+        let hasDigits = false;
+        while (pos < text.length && (/\d/.test(text[pos]) || text[pos] === '_')) {
+            if (/\d/.test(text[pos])) {
+                hasDigits = true;
+            }
             pos++;
         }
+        if (!hasDigits) {
+            return { type: 'number', value: 0, endPos: startPos };
+        }
+        // Parse decimal part
         if (pos < text.length && text[pos] === '.') {
             pos++;
-            while (pos < text.length && /\d/.test(text[pos])) {
+            let hasDecimalDigits = false;
+            while (pos < text.length && (/\d/.test(text[pos]) || text[pos] === '_')) {
+                if (/\d/.test(text[pos])) {
+                    hasDecimalDigits = true;
+                }
                 pos++;
             }
+            if (!hasDecimalDigits) {
+                return { type: 'number', value: 0, endPos: startPos };
+            }
         }
-        const numStr = text.slice(startPos, pos);
+        // Remove underscores before parsing
+        const numStr = text.slice(startPos, pos).replace(/_/g, '');
         const value = parseFloat(numStr);
         return { type: 'number', value, endPos: pos };
     }

@@ -49,7 +49,7 @@ function activate(context) {
                 return [];
             }
             const options = {
-                insertSpaces: config.get('insertSpaces', true),
+                insertSpaces: config.get('insertSpaces', false),
                 tabSize: config.get('tabSize', 2),
                 sortKeys: config.get('sortKeys', true),
                 trailingCommas: config.get('trailingCommas', false),
@@ -76,7 +76,7 @@ function activate(context) {
                 return [];
             }
             const options = {
-                insertSpaces: config.get('insertSpaces', true),
+                insertSpaces: config.get('insertSpaces', false),
                 tabSize: config.get('tabSize', 2),
                 sortKeys: config.get('sortKeys', true),
                 trailingCommas: config.get('trailingCommas', false),

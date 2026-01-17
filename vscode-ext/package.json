@@ -47,7 +47,7 @@
         },
         "jhon.format.insertSpaces": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Use spaces for indentation (vs. tabs)"
         },
         "jhon.format.tabSize": {

@@ -225,6 +225,19 @@ const parser_1 = require("../parser");
                 }
             });
         });
+        (0, bun_test_1.it)('should parse numbers with underscores', () => {
+            const result = parser.parse('large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000');
+            (0, bun_test_1.expect)(result.success).toBe(true);
+            (0, bun_test_1.expect)(result.value).toEqual({
+                type: 'object',
+                value: {
+                    large: { type: 'number', value: 100000 },
+                    million: { type: 'number', value: 1000000 },
+                    decimal: { type: 'number', value: 1234.56789 },
+                    neg_large: { type: 'number', value: -50000 }
+                }
+            });
+        });
     });
     (0, bun_test_1.describe)('Boolean and Null Values', () => {
         (0, bun_test_1.it)('should parse true', () => {

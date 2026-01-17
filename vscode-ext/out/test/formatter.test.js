@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const bun_test_1 = require("bun:test");
 const jhonFormatter_1 = require("../jhonFormatter");
+const parser_1 = require("../parser");
 function createFormatter(options = {}) {
     const defaultOptions = {
         insertSpaces: true,
@@ -85,6 +86,17 @@ function createFormatter(options = {}) {
             };
             const result = formatter.format(input);
             (0, bun_test_1.expect)(result).toBe('float = 3.14,\ninteger = 42,\nnegative = -123\n');
+        });
+        (0, bun_test_1.it)('should format numbers parsed from input with underscores', () => {
+            const parser = new parser_1.JhonParser();
+            const formatter = createFormatter();
+            // Input with underscores in numbers
+            const input = 'large=100_000, decimal=1_234.567_890';
+            const parseResult = parser.parse(input);
+            (0, bun_test_1.expect)(parseResult.success).toBe(true);
+            const formatted = formatter.format(parseResult.value);
+            // Output should not have underscores
+            (0, bun_test_1.expect)(formatted).toBe('decimal = 1234.56789,\nlarge = 100000\n');
         });
         (0, bun_test_1.it)('should format boolean values', () => {
             const formatter = createFormatter();
