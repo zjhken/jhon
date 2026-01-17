@@ -1,5 +1,5 @@
 {
-  "name": "jhon",
+  "name": "@zjhken/jhon",
   "version": "1.0.0",
   "description": "JHON - JinHui's Object Notation config language parser and serializer",
   "main": "./dist/index.js",

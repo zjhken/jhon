@@ -144,23 +144,32 @@ class Parser {
         }
         const quoteChar = this.input[this.pos];
         if (quoteChar === '"' || quoteChar === "'") {
-            // Quoted key
+            // Quoted key - optimized with substring for non-escape sequences
             this.pos++; // skip opening quote
             const parts = [];
+            let lastPartStart = this.pos;
             while (this.pos < this.length) {
                 const c = this.input[this.pos];
                 if (c === quoteChar) {
+                    // Add any remaining characters before the quote
+                    if (lastPartStart < this.pos) {
+                        parts.push(this.input.substring(lastPartStart, this.pos));
+                    }
                     this.pos++; // skip closing quote
                     return parts.join('');
                 }
                 else if (c === '\\') {
+                    // Add characters before the escape
+                    if (lastPartStart < this.pos) {
+                        parts.push(this.input.substring(lastPartStart, this.pos));
+                    }
                     this.pos++;
                     if (this.pos < this.length) {
                         parts.push(this.parseEscapeSequence(quoteChar));
                     }
+                    lastPartStart = this.pos;
                 }
                 else {
-                    parts.push(c);
                     this.pos++;
                 }
             }
@@ -255,33 +264,42 @@ class Parser {
         }
     }
     /**
-     * Parse a string value
+     * Parse a string value - optimized with substring for non-escape sequences
      */
     parseStringValue() {
         const quoteChar = this.input[this.pos];
         this.pos++; // skip opening quote
         const parts = [];
+        let lastPartStart = this.pos;
         while (this.pos < this.length) {
             const c = this.input[this.pos];
             if (c === quoteChar) {
+                // Add any remaining characters before the quote
+                if (lastPartStart < this.pos) {
+                    parts.push(this.input.substring(lastPartStart, this.pos));
+                }
                 this.pos++; // skip closing quote
                 return parts.join('');
             }
             else if (c === '\\') {
+                // Add characters before the escape
+                if (lastPartStart < this.pos) {
+                    parts.push(this.input.substring(lastPartStart, this.pos));
+                }
                 this.pos++;
                 if (this.pos < this.length) {
                     parts.push(this.parseEscapeSequence(quoteChar));
                 }
+                lastPartStart = this.pos;
             }
             else {
-                parts.push(c);
                 this.pos++;
             }
         }
         throw new JhonParseError('Unterminated string', this.pos);
     }
     /**
-     * Parse a raw string value (r"..." or r#"..."# or r##"..."##, etc.)
+     * Parse a raw string value (r"..." or r#"..."# or r##"..."##, etc.) - optimized with indexOf
      */
     parseRawStringValue() {
         if (this.input[this.pos] !== 'r' && this.input[this.pos] !== 'R') {
@@ -302,28 +320,20 @@ class Parser {
         }
         this.pos++; // skip opening quote
         const start = this.pos;
-        // Look for the closing sequence: " followed by hashCount # symbols
+        const closingPattern = '"' + '#'.repeat(hashCount);
+        // Use indexOf to find the closing pattern efficiently
         while (this.pos < this.length) {
-            if (this.input[this.pos] === '"') {
-                // Check if there are enough # symbols after the quote
-                if (this.pos + hashCount < this.length) {
-                    let isClosing = true;
-                    for (let j = 1; j <= hashCount; j++) {
-                        if (this.input[this.pos + j] !== '#') {
-                            isClosing = false;
-                            break;
-                        }
-                    }
-                    if (isClosing) {
-                        const content = this.input.substring(start, this.pos);
-                        this.pos += hashCount + 1;
-                        return content;
-                    }
-                }
+            const foundIndex = this.input.indexOf(closingPattern, this.pos);
+            if (foundIndex === -1) {
+                this.pos = this.length;
+                break;
             }
-            this.pos++;
+            this.pos = foundIndex;
+            const content = this.input.substring(start, this.pos);
+            this.pos += closingPattern.length;
+            return content;
         }
-        throw new JhonParseError(`Unterminated raw string (expected closing: "${'#'.repeat(hashCount)}")`, this.pos);
+        throw new JhonParseError(`Unterminated raw string (expected closing: "${closingPattern}")`, this.pos);
     }
     /**
      * Parse an array
@@ -408,21 +418,29 @@ class Parser {
         throw new JhonParseError('Unterminated nested object', this.pos);
     }
     /**
-     * Parse a number
+     * Parse a number - optimized to build string without underscores during parsing
      */
     parseNumber() {
-        const start = this.pos;
+        // Build the number string directly without underscores using array for efficiency
+        const numParts = [];
         // Optional minus sign
         if (this.pos < this.length && this.input[this.pos] === '-') {
+            numParts.push('-');
             this.pos++;
         }
-        // Digits before decimal point (underscores allowed as digit separators)
         let hasDigits = false;
+        // Digits before decimal point (underscores allowed as digit separators)
+        const start = this.pos;
         while (this.pos < this.length && (REGEX_DIGIT.test(this.input[this.pos]) || this.input[this.pos] === '_')) {
             if (this.input[this.pos] !== '_') {
                 hasDigits = true;
             }
             this.pos++;
+        }
+        // Add digits before decimal (substring is faster than loop with push)
+        if (start < this.pos) {
+            const digits = this.input.substring(start, this.pos).replace(/_/g, '');
+            numParts.push(digits);
         }
         if (!hasDigits) {
             throw new JhonParseError('Invalid number', this.pos);
@@ -430,6 +448,7 @@ class Parser {
         // Optional decimal part
         if (this.pos < this.length && this.input[this.pos] === '.') {
             this.pos++;
+            const decimalStart = this.pos;
             let hasDecimalDigits = false;
             while (this.pos < this.length && (REGEX_DIGIT.test(this.input[this.pos]) || this.input[this.pos] === '_')) {
                 if (this.input[this.pos] !== '_') {
@@ -440,10 +459,14 @@ class Parser {
             if (!hasDecimalDigits) {
                 throw new JhonParseError('Invalid decimal number', this.pos);
             }
+            // Add decimal part
+            numParts.push('.');
+            if (decimalStart < this.pos) {
+                const decimalDigits = this.input.substring(decimalStart, this.pos).replace(/_/g, '');
+                numParts.push(decimalDigits);
+            }
         }
-        // Build number string without underscores
-        const numStr = this.input.substring(start, this.pos).replace(/_/g, '');
-        const num = parseFloat(numStr);
+        const num = parseFloat(numParts.join(''));
         if (isNaN(num)) {
             throw new JhonParseError('Could not parse number', this.pos);
         }
@@ -563,18 +586,14 @@ class Serializer {
         this.sortKeys = options.sortKeys ?? true;
     }
     /**
-     * Check if a key needs quoting
+     * Check if a key needs quoting - optimized with single regex
      */
     needsQuoting(s) {
         if (s === '') {
             return true;
         }
-        for (const c of s) {
-            if (!/[a-zA-Z0-9_-]/.test(c)) {
-                return true;
-            }
-        }
-        return false;
+        // Use a single anchored regex test instead of character-by-character
+        return !/^[a-zA-Z0-9_-]+$/.test(s);
     }
     /**
      * Serialize a key
@@ -586,45 +605,45 @@ class Serializer {
         return key;
     }
     /**
-     * Serialize a string value
+     * Serialize a string value - optimized with array+join
      */
     serializeString(s) {
-        let result = '"';
+        const parts = ['"'];
         for (const c of s) {
             switch (c) {
                 case '\\':
-                    result += '\\\\';
+                    parts.push('\\\\');
                     break;
                 case '"':
-                    result += '\\"';
+                    parts.push('\\"');
                     break;
                 case '\n':
-                    result += '\\n';
+                    parts.push('\\n');
                     break;
                 case '\r':
-                    result += '\\r';
+                    parts.push('\\r');
                     break;
                 case '\t':
-                    result += '\\t';
+                    parts.push('\\t');
                     break;
                 case '\b':
-                    result += '\\b';
+                    parts.push('\\b');
                     break;
                 case '\f':
-                    result += '\\f';
+                    parts.push('\\f');
                     break;
                 default:
                     // Check if we need to escape as Unicode
                     if (c < ' ') {
-                        result += '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0');
+                        parts.push('\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
                     }
                     else {
-                        result += c;
+                        parts.push(c);
                     }
             }
         }
-        result += '"';
-        return result;
+        parts.push('"');
+        return parts.join('');
     }
     /**
      * Serialize a number
@@ -720,12 +739,25 @@ export function serialize(value, options) {
 // ============================================================================
 class PrettySerializer extends Serializer {
     indent;
+    indentCache;
     constructor(options = {}) {
         super(options);
         this.indent = options.indent ?? '  ';
+        this.indentCache = new Map();
+        // Pre-cache common indents (0-10 levels)
+        for (let i = 0; i <= 10; i++) {
+            this.indentCache.set(i, this.indent.repeat(i));
+        }
     }
     getIndent(depth) {
-        return this.indent.repeat(depth);
+        const cached = this.indentCache.get(depth);
+        if (cached !== undefined) {
+            return cached;
+        }
+        // Cache miss - compute and store
+        const indentStr = this.indent.repeat(depth);
+        this.indentCache.set(depth, indentStr);
+        return indentStr;
     }
     /**
      * Serialize an array with pretty formatting
