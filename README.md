@@ -94,7 +94,9 @@ complex_setting={
 
 ## API Reference
 
-### `parse(jhonString: string): object`
+### JavaScript/TypeScript
+
+#### `parse(jhonString: string): object`
 
 Parses a JHON string and returns the corresponding JavaScript object.
 
@@ -103,7 +105,7 @@ const result = parse('name="John" age=30');
 // { name: "John", age: 30 }
 ```
 
-### `stringify(value: object, options?: StringifyOptions): string`
+#### `stringify(value: object, options?: StringifyOptions): string`
 
 Converts a JavaScript object to a JHON string.
 
@@ -115,7 +117,7 @@ Options:
 - `pretty`: Enable pretty-printing (default: `false`)
 - `indent`: Indentation string (default: `"  "`)
 
-### `format(jhonString: string, options?: FormatOptions): string`
+#### `format(jhonString: string, options?: FormatOptions): string`
 
 Formats an existing JHON string.
 
@@ -125,6 +127,37 @@ const formatted = format(rawJhon, {
   sortKeys: true,
   alignEquals: true
 });
+```
+
+### Rust
+
+The Rust crate supports serde's `Serialize`/`Deserialize` derive macros:
+
+```rust
+use jhon::{Jhon, from_str, to_string};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+struct Config {
+    name: String,
+    port: u16,
+    debug: bool,
+}
+
+// Serialize
+let config = Config { name: "myapp".into(), port: 8080, debug: true };
+let jhon = to_string(&config)?;
+// Result: "debug=true,name=\"myapp\",port=8080"
+
+// Deserialize
+let decoded: Config = from_str("name=\"myapp\",port=8080,debug=true")?;
+```
+
+**Cargo.toml:**
+```toml
+[dependencies]
+jhon = "0.1"
+serde = { version = "1", features = ["derive"] }
 ```
 
 ## Comparison with JSON
@@ -137,6 +170,43 @@ const formatted = format(rawJhon, {
 | Raw strings | No | Yes (`r"..."`) |
 | Multi-line strings | Limited | Flexible |
 | Readability | Verbose | Clean |
+
+## Performance
+
+Benchmark results across multiple implementations (nanoseconds per operation):
+
+### Parse Performance
+
+| Language | Parse Small | Parse Medium | vs JSON (Small) | vs JSON (Medium) |
+|----------|-------------|--------------|------------------|------------------|
+| **Rust** | 238 ns | 1,133 ns | 1.29x slower | 1.38x slower |
+| **Go** | 223 ns | 1,234 ns | **2.19x faster** | **1.56x faster** |
+| **Java** | 181 ns | 1,560 ns | **2.60x faster** | **1.38x faster** |
+| **Python** | 4,488 ns | 25,565 ns | 7.98x slower | 21.02x slower |
+| **TypeScript** | 24,900 ns | ~70,000 ns | 9.19x slower | ~8x slower |
+
+### Serialize Performance
+
+| Language | Serialize Small | Serialize Medium | vs JSON (Small) | vs JSON (Medium) |
+|----------|-----------------|------------------|-----------------|------------------|
+| **Rust** | 130 ns | 468 ns | 2.38x slower | 1.55x slower |
+| **Go** | 134 ns | 845 ns | **2.13x faster** | **1.42x faster** |
+| **Java** | 519 ns | 2,078 ns | **2.50x faster** | **1.15x faster** |
+| **Python** | 1,248 ns | 8,818 ns | 1.51x slower | 5.77x slower |
+
+### Key Takeaways
+
+- **Go and Java** implementations are **faster than standard JSON** libraries for both parsing and serialization
+- **Rust** implementation is competitive within 1.3-2.4x of highly optimized serde_json
+- **Python/TypeScript** trade some performance for developer convenience (typical for config files)
+
+**Benchmark Details:**
+- Small: `name="John",age=30,active=true,score=95.5`
+- Medium: Nested objects with arrays, ~300 characters
+- Hardware: Apple M2/M4 Pro
+- JSON libraries: serde_json (Rust), stdlib (Go), Gson (Java), stdlib (Python), native (TS)
+
+JHON trades some raw performance in certain implementations for developer-friendly features (comments, raw strings, flexible syntax). For configuration files (typically <10KB), this performance difference is negligible.
 
 ## IDE Support
 
