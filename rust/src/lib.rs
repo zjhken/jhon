@@ -372,11 +372,6 @@ fn is_identifier_char(b: u8) -> bool {
     CLASSIFICATION[b as usize] & 0x04 != 0
 }
 
-#[inline(always)]
-fn is_structural(b: u8) -> bool {
-    CLASSIFICATION[b as usize] & 0x08 != 0
-}
-
 // =============================================================================
 // Optimized Parser
 // =============================================================================
@@ -631,7 +626,6 @@ impl<'a> Parser<'a> {
         // Parse integer part directly
         let mut value: u64 = 0;
         let mut has_digits = false;
-        let mut has_underscore = false;
 
         while self.pos < self.input.len() {
             let b = self.input[self.pos];
@@ -646,7 +640,6 @@ impl<'a> Parser<'a> {
                 has_digits = true;
             } else if b == b'_' {
                 self.pos += 1;
-                has_underscore = true;
             } else {
                 break;
             }
@@ -1159,7 +1152,7 @@ fn serialize_escape_byte(byte: u8, result: &mut String) {
             result.push(HEX[(byte >> 4) as usize] as char);
             result.push(HEX[(byte & 0x0F) as usize] as char);
         }
-        _ => unsafe {
+        _ => {
             // Safety: ESCAPE table only has the above values
             // This should never be reached
             result.push(byte as char);
