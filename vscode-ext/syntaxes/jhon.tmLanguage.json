@@ -32,15 +32,11 @@
 		"key-value-pairs": {
 			"patterns": [
 				{
-					"begin": "\\s*([a-zA-Z_-][a-zA-Z0-9_-]*|\"(?:\\\\.|[^\"])*\"|'(?:\\\\.|[^'])*')\\s*(=)",
+					"begin": "\\s*((?:[^\\s=,{}\\[\\]/\"'#]|[^\\s=,{}\\[\\]/\"'#]+)+|\"(?:\\\\.|[^\"])*\"|'(?:\\\\.|[^'])*')\\s*(=)",
 					"end": "(?=\\n|\\r|$|,|\\s*//|\\s*/\\*)",
 					"beginCaptures": {
 						"1": {
 							"patterns": [
-								{
-									"name": "entity.name.tag.unquoted.jhon",
-									"match": "[a-zA-Z_-][a-zA-Z0-9_-]*"
-								},
 								{
 									"name": "entity.name.tag.quoted.double.jhon",
 									"match": "\"(?:\\\\.|[^\"])*\""
@@ -48,6 +44,10 @@
 								{
 									"name": "entity.name.tag.quoted.single.jhon",
 									"match": "'(?:\\\\.|[^'])*'"
+								},
+								{
+									"name": "entity.name.tag.unquoted.jhon",
+									"match": "[^\\s=,{}\\[\\]/\"'#]+"
 								}
 							]
 						},
@@ -137,8 +137,20 @@
 		"numbers": {
 			"patterns": [
 				{
+					"name": "constant.numeric.hex.jhon",
+					"match": "-?0x[0-9a-fA-F_]+"
+				},
+				{
+					"name": "constant.numeric.octal.jhon",
+					"match": "-?0o[0-7_]+"
+				},
+				{
+					"name": "constant.numeric.binary.jhon",
+					"match": "-?0b[01_]+"
+				},
+				{
 					"name": "constant.numeric.jhon",
-					"match": "-?\\d(?:\\d|_)*(?:\\.\\d(?:\\d|_)*)?"
+					"match": "-?\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d[\\d_]*)?"
 				}
 			]
 		},
@@ -172,10 +184,6 @@
 				{
 					"name": "punctuation.separator.comma.jhon",
 					"match": ","
-				},
-				{
-					"name": "meta.separator.whitespace.jhon",
-					"match": "(?<=\\]|\\}|null|true|false|[0-9]|\"(?:\\\\.|[^\"])*\"|'(?:\\\\.|[^'])*')\\s+(?=\\[\\{|null|true|false|[0-9]|\"|'|[a-zA-Z_-])"
 				}
 			]
 		},

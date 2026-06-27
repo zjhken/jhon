@@ -363,7 +363,7 @@ function runBenchmark() {
 
   if (deepEqual(jsonParsed, jhonParsed)) {
     console.log('  ✓ JSON and JHON parsers produced semantically identical results');
-    console.log('  (Note: JHON sorts object keys alphabetically by default)');
+    console.log('  (Note: JHON preserves object key insertion order per SPEC §5.4)');
   } else {
     console.log('  ✗ JSON and JHON parsers produced different results!');
   }
