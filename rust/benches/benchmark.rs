@@ -1,7 +1,7 @@
-// Benchmark JHON vs JSON using libtest benchmark harness
+// Benchmark JHON vs JSON using criterion (works on stable Rust).
 
-#![feature(test)]
-extern crate test;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use jhon::{parse, serialize};
 
 const SMALL_JHON: &str = r#"name="John Doe",age=30,active=true,score=95.5"#;
 const SMALL_JSON: &str = r#"{"name":"John Doe","age":30,"active":true,"score":95.5}"#;
@@ -22,50 +22,54 @@ const MEDIUM_JSON: &str = r#"{
     "version": 1000000
 }"#;
 
-#[bench]
-fn bench_jhon_parse_small(b: &mut test::Bencher) {
-    b.iter(|| jhon::parse(SMALL_JHON).unwrap());
-}
+fn bench_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse");
 
-#[bench]
-fn bench_json_parse_small(b: &mut test::Bencher) {
-    b.iter(|| {
-        let _: serde_json::Value = serde_json::from_str(SMALL_JSON).unwrap();
+    group.bench_with_input(BenchmarkId::new("jhon", "small"), &SMALL_JHON, |b, input| {
+        b.iter(|| parse(black_box(input)).unwrap());
     });
-}
-
-#[bench]
-fn bench_jhon_serialize_small(b: &mut test::Bencher) {
-    let value: serde_json::Value = serde_json::from_str(SMALL_JSON).unwrap();
-    b.iter(|| jhon::serialize(&value));
-}
-
-#[bench]
-fn bench_json_serialize_small(b: &mut test::Bencher) {
-    let value: serde_json::Value = serde_json::from_str(SMALL_JSON).unwrap();
-    b.iter(|| serde_json::to_string(&value).unwrap());
-}
-
-#[bench]
-fn bench_jhon_parse_medium(b: &mut test::Bencher) {
-    b.iter(|| jhon::parse(MEDIUM_JHON).unwrap());
-}
-
-#[bench]
-fn bench_json_parse_medium(b: &mut test::Bencher) {
-    b.iter(|| {
-        let _: serde_json::Value = serde_json::from_str(MEDIUM_JSON).unwrap();
+    group.bench_with_input(BenchmarkId::new("json", "small"), &SMALL_JSON, |b, input| {
+        b.iter(|| {
+            let _: serde_json::Value = serde_json::from_str(black_box(input)).unwrap();
+        });
     });
+    group.bench_with_input(BenchmarkId::new("jhon", "medium"), &MEDIUM_JHON, |b, input| {
+        b.iter(|| parse(black_box(input)).unwrap());
+    });
+    group.bench_with_input(
+        BenchmarkId::new("json", "medium"),
+        &MEDIUM_JSON,
+        |b, input| {
+            b.iter(|| {
+                let _: serde_json::Value = serde_json::from_str(black_box(input)).unwrap();
+            });
+        },
+    );
+
+    group.finish();
 }
 
-#[bench]
-fn bench_jhon_serialize_medium(b: &mut test::Bencher) {
-    let value: serde_json::Value = serde_json::from_str(MEDIUM_JSON).unwrap();
-    b.iter(|| jhon::serialize(&value));
+fn bench_serialize(c: &mut Criterion) {
+    let small: serde_json::Value = serde_json::from_str(SMALL_JSON).unwrap();
+    let medium: serde_json::Value = serde_json::from_str(MEDIUM_JSON).unwrap();
+
+    let mut group = c.benchmark_group("serialize");
+
+    group.bench_with_input(BenchmarkId::new("jhon", "small"), &small, |b, value| {
+        b.iter(|| serialize(black_box(value)));
+    });
+    group.bench_with_input(BenchmarkId::new("json", "small"), &small, |b, value| {
+        b.iter(|| serde_json::to_string(black_box(value)).unwrap());
+    });
+    group.bench_with_input(BenchmarkId::new("jhon", "medium"), &medium, |b, value| {
+        b.iter(|| serialize(black_box(value)));
+    });
+    group.bench_with_input(BenchmarkId::new("json", "medium"), &medium, |b, value| {
+        b.iter(|| serde_json::to_string(black_box(value)).unwrap());
+    });
+
+    group.finish();
 }
 
-#[bench]
-fn bench_json_serialize_medium(b: &mut test::Bencher) {
-    let value: serde_json::Value = serde_json::from_str(MEDIUM_JSON).unwrap();
-    b.iter(|| serde_json::to_string(&value).unwrap());
-}
+criterion_group!(benches, bench_parse, bench_serialize);
+criterion_main!(benches);
