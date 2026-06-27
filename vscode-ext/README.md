@@ -1,81 +1,74 @@
-# JHON Syntax Highlight
+# JHON Language Support
 
-> JHON === **JinHui's Object Notation** - A flexible configuration format
+> JHON === **JinHui's Object Notation** — a configuration language with `key=value` syntax, comments, raw strings, and flexible separators.
 
 ## Overview
 
-JHON is a JSON-like configuration format with flexible syntax and enhanced readability. This VSCode extension provides syntax highlighting support for JHON files (`.jhon`).
+This VSCode extension provides syntax highlighting, formatting, and live diagnostics for JHON files (`.jhon`). The parser is the canonical TypeScript implementation at `@zjhken/jhon`, mirrored from the Rust reference — see `../SPEC.md` for the language spec.
 
 ## Features
 
-- ✅ Full syntax highlighting for JHON files
-- ✅ **Automatic formatting** with customizable options
-- ✅ Support for single-line (`//`) and multi-line (`/* */`) comments
-- ✅ Clean separators (commas or newlines)
-- ✅ Support for nested objects and arrays
-- ✅ String literals (including raw strings with `r"..."` and `R"..."` syntax)
-- ✅ All JSON data types: strings, numbers, booleans, null
-- ✅ Escape sequences and Unicode support
-- ✅ Single and double-quoted strings
-- ✅ Keys with hyphens (e.g., `my-key=value`)
+- **Syntax highlighting** for JHON: comments, strings (including raw strings), numbers (decimal, hex, octal, binary, exponents), booleans, null, nested objects and arrays
+- **Document and range formatting** (Shift+Alt+F) that preserves your comments through round-trips
+- **Live diagnostics** — red squiggles under spec violations as you type, with entries in the Problems panel
+- **"Format to One Line"** command that collapses the document to compact JHON
+- **Strict spec compliance** — every rule in SPEC §8 is enforced, so malformed input is reported immediately
 
-## JHON Syntax Example
+## JHON syntax example
 
 ```jhon
 // Application configuration
-app_name="ocean-note"
-version="1.0.0"
+app_name = "ocean-note"
+version = "1.0.0"
 
 // Feature flags
-features=["markdown" "collaboration" "real-time"]
+features = ["markdown", "collaboration", "real-time"]
 
 // Database configuration
-database={
-  host="localhost"
-  port=5432
-  name="mydb"
-  credentials=[
-    {user="admin" role="owner"}
-    {user="reader" role="readonly"}
+database = {
+  host = "localhost"
+  port = 5432
+  name = "mydb"
+  credentials = [
+    { user = "admin", role = "owner" }
+    { user = "reader", role = "readonly" }
   ]
 }
 
-// Numeric settings
-max_file_size=1048576	timeout=30.5
-
-debug=true
-log_level="info"
+max_file_size = 1_048_576
+timeout = 30.5
+debug = true
+log_level = "info"
 ```
 
-## Key Features of JHON
+### Key rules (per SPEC.md)
 
-1. **Clean Separators**: Use commas or newlines to separate properties
-2. **Optional Quotes**: Keys can be quoted or unquoted
-3. **Comments**: Both single-line and multi-line comments supported
-4. **Nested Structures**: Support for objects and arrays with unlimited nesting depth
-5. **Raw Strings**: Use Rust-style `r"..."` syntax for strings without escape sequences
-   - `r"text"` - basic raw string
-   - `r#"text with "quotes" "#` - raw string with quotes
-   - `r##"text with ## hashes"##` - add more `#` as needed
-6. **JSON-compatible**: Can be converted to/from JSON
+1. **Separators are commas OR newlines** — two items on the **same line** require a comma (SPEC §5.3). Spaces alone between items are an error.
+2. **Comments** — `//` line comments and `/* */` block comments (non-nesting). May appear anywhere whitespace is allowed.
+3. **Strings** — double or single quoted, with escapes `\n \t \r \b \f \" \' \\ \/ \uXXXX \xXX`. Unknown escapes are errors. Literal control characters are forbidden.
+4. **Raw strings** — Rust-style `r"..."` / `R"..."` with optional `#` delimiters (`r#"..."#`, `r##"..."##`). No escape processing. May span multiple lines.
+5. **Numbers** — decimal (`42`, `1_000_000`), hex (`0xff`), octal (`0o777`), binary (`0b1010`), floats (`3.14`, `1.5e-3`). Underscores allowed between digits only. Radix prefixes are lowercase only.
+6. **Keys** — bare identifiers may contain any character except whitespace, `=`, `,`, `{ } [ ]`, `/`, `" '`, and `#`. Unicode letters, digits, hyphens, dots, and emoji are all valid in any position.
+7. **Top-level** — objects (braces optional) or arrays. Scalars at top level are errors.
+8. **Duplicate keys** in the same object are an error.
 
-## Raw String Examples
+## Raw string examples
 
 ```jhon
 // Simple raw string
-simple=r"Hello, World!"
+simple = r"Hello, World!"
 
 // Raw string containing quotes
-with_quotes=r#"He said "Hello" to me"#
+with_quotes = r#"He said "Hello" to me"#
 
 // Multi-line raw string
-multiline=r#"This is a
+multiline = r#"This is a
 multi-line
 string without escaping"#
 
 // Raw string with special characters
-path=r"C:\Users\name\file.txt"
-regex=r#\d+\w+\s+#
+path = r"C:\Users\name\file.txt"
+regex = r"\d+\w+\s+"
 ```
 
 ## Installation
@@ -84,128 +77,119 @@ regex=r#\d+\w+\s+#
 
 Search for "JHON Language Support" in the VSCode extensions panel.
 
-### Manual Installation
+### Manual installation
 
-1. Download the latest `.vsix` file from the [Releases](https://github.com/zjhken/jhon-syntax-highlight/releases) page
-2. Open VSCode
-3. Go to Extensions → Click the "..." menu → Install from VSIX...
-4. Select the downloaded file
+1. Download the latest `.vsix` from the [Releases](https://github.com/zjhken/jhon/releases) page
+2. Open VSCode → Extensions panel → "..." menu → "Install from VSIX..."
+3. Select the downloaded file
 
 ## Usage
 
-Create a file with the `.jhon` extension and start writing JHON configuration. The extension will automatically provide syntax highlighting.
+Create a file with the `.jhon` extension. The extension automatically activates and provides highlighting, formatting, and diagnostics.
 
 ## Formatter
 
-The extension includes a powerful formatter with the following features:
+The formatter wraps the canonical `@zjhken/jhon` parser/serializer. It produces **pretty** output per SPEC §7.1: multi-line, spaces around `=`, **newline-only separators (no commas)**, no trailing commas.
 
-### Formatting Features
+### Formatting features
 
-- **Full document formatting**: Format the entire document with `Shift+Alt+F` (Windows/Linux) or `Shift+Option+F` (Mac)
-- **Range formatting**: Format selected text only
-- **Format on save**: Automatically format when saving the file (can be enabled in VSCode settings)
+- **Document formatting**: Format Document (`Shift+Alt+F` on Windows/Linux, `Shift+Option+F` on Mac)
+- **Range formatting**: Format Selection on the highlighted region
+- **Format on save**: enable via VSCode's `editor.formatOnSave` setting
 
-### Configuration Options
+### Compact format command
 
-You can customize the formatter behavior in your VSCode settings (`settings.json`):
+The **"JHON: Format to One Line"** command (Command Palette) collapses the entire document into compact JHON — single line, no spaces around `=`, no spaces after commas, no trailing commas.
 
-```json
+### Configuration
+
+Customize the formatter in `settings.json`:
+
+```jsonc
 {
-  // Enable/disable formatter (default: true)
+  // Enable/disable the JHON formatter (default: true)
   "jhon.format.enable": true,
 
-  // Use spaces for indentation (default: true)
-  "jhon.format.insertSpaces": true,
+  // Use spaces for indentation vs. tabs (default: false → tabs)
+  "jhon.format.insertSpaces": false,
 
-  // Number of spaces for indentation (default: 2)
+  // Number of spaces per indent level when insertSpaces is true,
+  // or visual size of one tab (default: 2)
   "jhon.format.tabSize": 2,
 
-  // Sort object keys alphabetically (default: true)
-  "jhon.format.sortKeys": true,
+  // Sort object keys alphabetically on serialize.
+  // Default false — SPEC §5.4 mandates insertion order.
+  "jhon.format.sortKeys": false,
 
-  // Add trailing commas to objects and arrays (default: false)
-  "jhon.format.trailingCommas": false,
+  // Enable live parse-error diagnostics (default: true)
+  "jhon.diagnostics.enable": true,
 
-  // Align equals signs in objects (default: false)
-  "jhon.format.alignEquals": false,
-
-  // Quote style: "double", "single", or "auto" (default: "auto")
-  "jhon.format.quoteStyle": "auto"
+  // Debounce window (ms) after a keystroke before re-parsing (default: 300)
+  "jhon.diagnostics.debounceMs": 300
 }
 ```
 
-### Formatter Examples
+### Formatter example
 
-**Before formatting:**
+**Input** (compact, key order scrambled):
+
 ```jhon
-database={host="localhost" port=5432 name="mydb"}
-features=["markdown","collaboration","real-time"]
-app_name="ocean-note" version="1.0.0" debug=true
+debug=true,version="1.0.0",app_name="ocean-note",database={name="mydb",port=5432,host="localhost"},features=["markdown","collaboration","real-time"]
 ```
 
-**After formatting (with default settings):**
+**After "Format Document"** (default settings — preserves insertion order, no commas):
+
 ```jhon
-app_name = "ocean-note",
-database = {
-  host = "localhost",
-  name = "mydb",
-  port = 5432
-},
-debug = true,
-features = [
-  "markdown",
-  "collaboration",
-  "real-time"
-],
+debug = true
 version = "1.0.0"
-```
-
-**After formatting (with `alignEquals: true`):**
-```jhon
-app_name  = "ocean-note",
-database  = {
-  host     = "localhost",
-  name     = "mydb",
-  port     = 5432
-},
-debug     = true,
-features  = [
-  "markdown",
-  "collaboration",
+app_name = "ocean-note"
+database = {
+  name = "mydb"
+  port = 5432
+  host = "localhost"
+}
+features = [
+  "markdown"
+  "collaboration"
   "real-time"
-],
-version   = "1.0.0"
+]
 ```
 
-## File Association
+**After "JHON: Format to One Line"**:
 
-The extension automatically associates `.jhon` files with the JHON language.
+```jhon
+debug=true,version="1.0.0",app_name="ocean-note",database={name="mydb",port=5432,host="localhost"},features=["markdown","collaboration","real-time"]
+```
+
+## Diagnostics
+
+When `jhon.diagnostics.enable` is true, the extension parses the document live (debounced by `jhon.diagnostics.debounceMs` ms after the last keystroke, and on save). Any SPEC.md violation produces a red squiggle and an entry in the Problems panel:
+
+- Top-level scalars (`42`, `"foo"`, `true`, `null` alone)
+- Same-line items without a comma (`a=1 b=2`)
+- Malformed numbers (`+5`, `0Xff`, `5u8`, `5_`, `_5`, `5__5`)
+- Duplicate keys
+- Unknown escapes (`"foo\q"`)
+- Literal control chars in strings
+- Unterminated strings, raw strings, comments, arrays, objects
+- Unbalanced braces/brackets
+- Empty keys
+- Top-level array followed by other content
+
+The diagnostic source is labeled `jhon`, and the range reflects the offending token's source position.
+
+## File association
+
+`.jhon` files are automatically associated with the JHON language.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
-
-This means:
-- ✅ Free to use, modify, and distribute
-- ✅ All modifications must also be open source under GPL-3.0
-- ❌ Cannot be used in proprietary/closed-source software
-- ❌ Cannot be sublicensed with different terms
-
-See the [LICENSE](LICENSE) file for the full text.
+MIT. See [LICENSE](LICENSE) for the full text.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-If you find any bugs or have feature requests, please open an issue on [GitHub Issues](https://github.com/zjhken/jhon-syntax-highlight/issues).
+Contributions are welcome — please open a Pull Request at [github.com/zjhken/jhon](https://github.com/zjhken/jhon).
 
 ## Author
 
-**Jinhui ZHANG** - [GitHub](https://github.com/zjhken)
-
-## Acknowledgments
-
-- VSCode Extension API
-- TextMate grammar system
+**Jinhui ZHANG** — [GitHub](https://github.com/zjhken)

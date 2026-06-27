@@ -1,77 +1,98 @@
 # JHON
 
-**JHON (JinHui's Object Notation)** is a configuration language that provides a cleaner, more readable alternative to JSON while maintaining full compatibility with JSON data structures.
+**JHON (JinHui's Object Notation)** is a configuration language that uses a clean `key=value` syntax with full JSON data-model compatibility, plus comments, raw strings, and flexible separators. See [`SPEC.md`](./SPEC.md) for the canonical language specification.
+
+The Rust impl at [`rust/`](./rust/) is the spec reference; the other four implementations (Go, Java, Python, TypeScript) mirror its behavior.
 
 ## Features
 
-- **Human-Friendly Syntax**: Simple `key=value` format instead of JSON's `"key": "value"`
-- **Comments**: Native support for single-line (`//`) and multi-line (`/* */`) comments
-- **Rich Data Types**: Strings, numbers, booleans, null, arrays, and objects
-- **Raw Strings**: Rust-inspired raw strings for paths and patterns (e.g., `r"C:\path"`)
-- **Clean Formatting**: Simple syntax with commas or newlines as separators
-- **Zero Dependencies**: Lightweight TypeScript implementation with no external dependencies
-- **IDE Support**: VSCode extension with syntax highlighting and formatting
+- **Human-friendly syntax**: `key=value` instead of `"key": value`
+- **Comments**: `//` line and `/* */` block comments
+- **Raw strings**: Rust-style `r"..."` / `r#"..."#` for paths, regexes, and other backslash-heavy content
+- **Flexible separators**: commas or newlines between items
+- **Radix literals**: hex (`0xff`), octal (`0o777`), binary (`0b1010`), exponents (`1.5e-3`), underscore digit separators (`1_000_000`)
+- **Strict spec compliance**: every malformed input is rejected with a positioned error
+- **IDE support**: VSCode extension with syntax highlighting, comment-preserving formatter, live diagnostics, and a "Format to One Line" command
+- **Five reference implementations**: Rust, Go, Java, Python, TypeScript — all spec-compliant and benchmarked
 
-## Installation
+## Implementations
 
-### npm
+| Directory | Language | Package |
+|-----------|----------|---------|
+| [`rust/`](./rust/) | Rust 2024 | `jhon` on crates.io (v2.0.0) |
+| [`golang/`](./golang/) | Go 1.21 | `github.com/jhon-lang/jhon` |
+| [`java/`](./java/) | Java 21 | `dev.jhon:jhon` (Maven) |
+| [`python/`](./python/) | Python 3.12 | `jhon` on PyPI |
+| [`typescript/`](./typescript/) | TypeScript 5 / ES2022 | `@zjhken/jhon` on npm (v2.0.0) |
+| [`vscode-ext/`](./vscode-ext/) | TypeScript | `JHON Language Support` on the VSCode Marketplace |
+
+## Quick start (TypeScript)
 
 ```bash
-npm install jhon
+npm install @zjhken/jhon
+# or: bun add @zjhken/jhon
 ```
 
-### CDN
+```typescript
+import { parse, serialize, serializePretty } from '@zjhken/jhon';
 
-```html
-<script src="https://unpkg.com/jhon/dist/jhon.min.js"></script>
-```
-
-## Quick Start
-
-```javascript
-import { parse, stringify } from 'jhon';
-
-// Parse JHON to JSON
 const config = parse(`
-  app_name="ocean-note"
-  version="1.0.0"
-  debug=true
-  database={host="localhost",port=5432}
+  // Server configuration
+  name = "my-app"
+  port = 3000
+  debug = true
+  database = { host = "localhost", port = 5432 }
+  features = ["auth", "api", "logging"]
 `);
 
-// Serialize JSON to JHON
-const jhon = stringify({ app_name: "myapp", features: ["a", "b"] });
+// Compact single-line JHON (no spaces around =, no spaces after commas)
+serialize(config);
+// → 'name="my-app",port=3000,debug=true,database={host="localhost",port=5432},features=["auth","api","logging"]'
+
+// Pretty multi-line JHON (spaces around =, newline-only separators, no trailing commas)
+serializePretty(config);
 ```
 
-## Syntax Examples
+For the Rust, Go, Java, and Python equivalents, see each impl's directory.
 
-### Basic Values
+## Syntax
+
+### Basic values
 
 ```jhon
-// Strings with different quote styles
-name="John" nickname='Johnny' raw=r"C:\path\to\file"
+// Strings: double-quoted, single-quoted, or raw
+name = "John"
+nickname = 'Johnny'
+path = r"C:\path\to\file"
 
-// Numbers with optional underscores
-count=42 temperature=-5.3 large=1_000_000
+// Numbers: decimal, hex, octal, binary, with underscores
+count = 42
+temperature = -5.3
+large = 1_000_000
+hex_color = 0xFF00FF
+mask = 0o777
+flags = 0b1010_0011
 
 // Booleans and null
-active=true deleted=false placeholder=null
+active = true
+deleted = false
+placeholder = null
 ```
 
-### Arrays and Objects
+**Same-line items need a comma.** Spaces or tabs alone between items on the same line are an error per SPEC §5.3 — use a comma or a newline.
+
+### Arrays and objects
 
 ```jhon
-// Arrays
-tags=["typescript", "config", "json"]
-numbers=[1, 2, 3, 4, 5]
+tags = ["typescript", "config", "json"]
+numbers = [1, 2, 3, 4, 5]
 
-// Nested objects
-database={
-  host="localhost"
-  port=5432
-  credentials={
-    user="admin"
-    password=r"raw\password"
+database = {
+  host = "localhost"
+  port = 5432
+  credentials = {
+    user = "admin"
+    password = r"raw\password"
   }
 }
 ```
@@ -79,59 +100,43 @@ database={
 ### Comments
 
 ```jhon
-// This is a single-line comment
-setting="value"  /* inline comment */
+// Single-line comment
+setting = "value"  /* inline block comment */
 
 /*
-  Multi-line comment
+  Multi-line block comment
   for longer explanations
 */
-complex_setting={
-  // Nested comments work too
-  key=value
+complex_setting = {
+  nested = true  // comments inside objects work too
 }
 ```
 
-## API Reference
+### Raw strings
 
-### JavaScript/TypeScript
-
-#### `parse(jhonString: string): object`
-
-Parses a JHON string and returns the corresponding JavaScript object.
-
-```javascript
-const result = parse('name="John" age=30');
-// { name: "John", age: 30 }
+```jhon
+simple = r"Hello, World!"
+with_quotes = r#"He said "Hello" to me"#
+multiline = r#"This is a
+multi-line string without escaping"#
+regex = r"\d+\w+\s+"
 ```
 
-#### `stringify(value: object, options?: StringifyOptions): string`
+## Cross-implementation API
 
-Converts a JavaScript object to a JHON string.
+| Language | Parse | Serialize (compact) | Serialize (pretty) |
+|----------|-------|---------------------|--------------------|
+| Rust | `jhon::parse(s) -> Result<Value, JhonError>` | `jhon::serialize(&v) -> String` | `jhon::serialize_pretty(&v, "  ") -> String` |
+| Go | `jhon.Parse(s) (Value, error)` | `jhon.Serialize(v) string` | `jhon.SerializePretty(v, "  ") string` |
+| Java | `Jhon.parse(s) throws JhonParseException` | `Jhon.serialize(o) String` | `Jhon.serializePretty(o, "  ") String` |
+| Python | `jhon.parse(s) -> Any` | `jhon.serialize(v) -> str` | `jhon.serialize_pretty(v, "  ") -> str` |
+| TypeScript | `parse(s): JhonObject` | `serialize(v): string` | `serializePretty(v): string` |
 
-```javascript
-const jhon = stringify({ name: "John", age: 30 }, { pretty: true });
-```
+All five raise a typed error (with 1-based line/column) when the input violates SPEC §8.
 
-Options:
-- `pretty`: Enable pretty-printing (default: `false`)
-- `indent`: Indentation string (default: `"  "`)
+### Rust (serde integration)
 
-#### `format(jhonString: string, options?: FormatOptions): string`
-
-Formats an existing JHON string.
-
-```javascript
-const formatted = format(rawJhon, {
-  indent: "  ",
-  sortKeys: true,
-  alignEquals: true
-});
-```
-
-### Rust
-
-The Rust crate supports serde's `Serialize`/`Deserialize` derive macros:
+The Rust crate additionally supports serde's `Serialize`/`Deserialize` derive macros via the `Jhon` wrapper:
 
 ```rust
 use jhon::{Jhon, from_str, to_string};
@@ -144,19 +149,18 @@ struct Config {
     debug: bool,
 }
 
-// Serialize
 let config = Config { name: "myapp".into(), port: 8080, debug: true };
 let jhon = to_string(&config)?;
-// Result: "debug=true,name=\"myapp\",port=8080"
+// → 'name="myapp",port=8080,debug=true'
 
-// Deserialize
-let decoded: Config = from_str("name=\"myapp\",port=8080,debug=true")?;
+let decoded: Config = from_str(r#"name="myapp",port=8080,debug=true"#)?;
 ```
 
 **Cargo.toml:**
+
 ```toml
 [dependencies]
-jhon = "0.1"
+jhon = "2"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -166,10 +170,13 @@ serde = { version = "1", features = ["derive"] }
 |---------|------|------|
 | Key syntax | `"key": value` | `key=value` |
 | Comments | No | Yes (`//` and `/* */`) |
-| Trailing commas | No | Yes |
-| Raw strings | No | Yes (`r"..."`) |
-| Multi-line strings | Limited | Flexible |
-| Readability | Verbose | Clean |
+| Trailing commas | No | Yes (in input) |
+| Raw strings | No | Yes (`r"..."`, `r#"..."#`) |
+| Radix literals (`0x`, `0o`, `0b`) | No | Yes |
+| Underscore digit separators | No | Yes |
+| Multi-line strings | No | Yes (raw strings) |
+| Duplicate keys | Allowed | **Error** |
+| Top-level scalar | Allowed | **Error** |
 
 ## Performance
 
@@ -209,21 +216,23 @@ Benchmark results across multiple implementations (nanoseconds per operation). A
 - Hardware: Apple M5 (criterion for Rust; JMH fork=1 wi=2 i=3 for Java; `go test -bench=.` for Go; `bun run benchmark` for TypeScript; `uv run python benchmark_jhon.py` for Python)
 - JSON libraries: `serde_json` (Rust), `encoding/json` (Go), Gson (Java), stdlib (Python), native (TypeScript)
 
-JHON trades some raw performance in certain implementations for developer-friendly features (comments, raw strings, flexible syntax). For configuration files (typically <10KB), this performance difference is negligible.
+For configuration files (typically <10 KB), parse latency is well under a millisecond across every implementation — well below file I/O and editor paint time.
 
 ## IDE Support
 
-### VSCode Extension
+The VSCode extension ([`vscode-ext/`](./vscode-ext/)) provides:
 
-Install the JHON extension for VSCode to get:
-- Syntax highlighting for `.jhon` files
-- Code formatting with customizable options
-- Auto-completion support
+- **Syntax highlighting** for `.jhon` files (TextMate grammar covering comments, strings, raw strings, numbers, keywords, and structural punctuation)
+- **Comment-preserving formatter** — Format Document (`Shift+Alt+F`) and Format Selection rewrite the document to pretty-printed JHON while keeping `//` and `/* */` comments attached to their owning nodes
+- **Live diagnostics** — red squiggles under SPEC §8 violations as you type, plus entries in the Problems panel
+- **"JHON: Format to One Line"** command — collapses the document to compact single-line JHON
+
+Install from the VSCode Marketplace by searching for "JHON Language Support", or via the command line:
 
 ```bash
-code --install-extension jhon-vscode
+code --install-extension Jinhui-ZHANG.jhon-syntax-highlight
 ```
 
 ## License
 
-MIT
+MIT. See [LICENSE](./LICENSE).
