@@ -1,451 +1,474 @@
 """
-Comprehensive unit tests for JHON parser
+JHON spec-conformance tests. Mirrors rust/src/lib.rs tests one-to-one so
+behavior parity is verifiable. Run with `uv run pytest`.
 """
 
-import unittest
-import json
-from jhon import parse, serialize, serialize_pretty, JhonParseError
-
-
-class TestBasicParsing(unittest.TestCase):
-    """Tests for basic parsing functionality."""
-
-    def test_empty_input(self):
-        result = parse("")
-        self.assertEqual(result, {})
-
-    def test_basic_key_value(self):
-        result = parse('a="hello", b=123.45')
-        self.assertEqual(result["a"], "hello")
-        self.assertEqual(result["b"], 123.45)
-
-    def test_string_types(self):
-        result = parse('"quoted key"="value", unquoted_key="another"')
-        self.assertEqual(result["quoted key"], "value")
-        self.assertEqual(result["unquoted_key"], "another")
-
-    def test_string_values(self):
-        result = parse('text="simple string", empty="", spaces="  with  spaces  "')
-        self.assertEqual(result["text"], "simple string")
-        self.assertEqual(result["empty"], "")
-        self.assertEqual(result["spaces"], "  with  spaces  ")
-
-    def test_string_escaping(self):
-        result = parse(r'newline="hello\nworld", backslash="path\\to\\file"')
-        self.assertEqual(result["newline"], "hello\nworld")
-        self.assertEqual(result["backslash"], r"path\to\file")
-
-    def test_unicode_escape(self):
-        result = parse('unicode="Hello\\u00A9World"')
-        self.assertEqual(result["unicode"], "Hello©World")
-
-    def test_numbers(self):
-        result = parse("int=42, float=3.14, negative=-123")
-        self.assertEqual(result["int"], 42)
-        self.assertEqual(result["float"], 3.14)
-        self.assertEqual(result["negative"], -123)
-
-    def test_numbers_with_underscores(self):
-        result = parse("large=100_000, million=1_000_000, decimal=1_234.567_890")
-        self.assertEqual(result["large"], 100000)
-        self.assertEqual(result["million"], 1000000)
-        self.assertEqual(result["decimal"], 1234.56789)
-
-    def test_booleans(self):
-        result = parse("truth=true, falsehood=false")
-        self.assertTrue(result["truth"])
-        self.assertFalse(result["falsehood"])
-
-    def test_null_value(self):
-        result = parse("empty=null")
-        self.assertIsNone(result["empty"])
-
-    def test_empty_arrays(self):
-        result = parse("empty=[]")
-        self.assertEqual(result["empty"], [])
-
-    def test_arrays_with_strings(self):
-        result = parse('strings=["hello", "world", "test"]')
-        self.assertEqual(result["strings"], ["hello", "world", "test"])
-
-    def test_arrays_with_numbers(self):
-        result = parse("numbers=[1, 2.5, -3, 4.0]")
-        self.assertEqual(result["numbers"], [1, 2.5, -3, 4.0])
-
-    def test_arrays_with_mixed_types(self):
-        result = parse('mixed=["hello", 123, true, null, 45.6]')
-        self.assertEqual(result["mixed"], ["hello", 123, True, None, 45.6])
-
-    def test_multiline(self):
-        result = parse("""
-            name = "test",
-            age = 25,
-            active = true
-        """)
-        self.assertEqual(result["name"], "test")
-        self.assertEqual(result["age"], 25)
-        self.assertTrue(result["active"])
-
-    def test_single_line_comments(self):
-        result = parse("""
-            // This is a comment
-            name = "test"  // inline comment
-            age = 25
-        """)
-        self.assertEqual(result["name"], "test")
-        self.assertEqual(result["age"], 25)
-
-    def test_multiline_comments(self):
-        result = parse("""
-            /* This is a
-               multiline comment */
-            name = "test"
-        """)
-        self.assertEqual(result["name"], "test")
-
-    def test_trailing_commas(self):
-        result = parse("name=\"test\", age=25, ")
-        self.assertEqual(result["name"], "test")
-        self.assertEqual(result["age"], 25)
-
-    def test_array_trailing_commas(self):
-        result = parse('items=["apple", "banana", "cherry", ]')
-        self.assertEqual(result["items"], ["apple", "banana", "cherry"])
-
-    def test_nested_objects(self):
-        result = parse("server={host=\"localhost\", port=8080}")
-        self.assertEqual(result["server"]["host"], "localhost")
-        self.assertEqual(result["server"]["port"], 8080)
-
-    def test_raw_strings(self):
-        result = parse(r'path=r"C:\Windows\System32"')
-        self.assertEqual(result["path"], r"C:\Windows\System32")
-
-    def test_raw_strings_with_hashes(self):
-        result = parse(r'contains_hash=r#"This has a " quote in it"#')
-        self.assertEqual(result["contains_hash"], 'This has a " quote in it')
-
-    def test_single_quoted_strings(self):
-        result = parse("name='John', greeting='Hello'")
-        self.assertEqual(result["name"], "John")
-        self.assertEqual(result["greeting"], "Hello")
-
-    def test_quotes_inside_strings(self):
-        result = parse('text=\'He said "hello" to me\'')
-        self.assertEqual(result["text"], 'He said "hello" to me')
-
-    def test_quoted_keys_with_spaces(self):
-        result = parse('"my key"="value", "another key"="test"')
-        self.assertEqual(result["my key"], "value")
-        self.assertEqual(result["another key"], "test")
-
-    def test_complex_nested_structure(self):
-        result = parse("""
-            server = {
-                host = "localhost",
-                port = 3000,
-                middleware = [
-                    {name = "logger", enabled = true},
-                    {name = "cors", enabled = false}
-                ]
-            }
-        """)
-        self.assertEqual(result["server"]["host"], "localhost")
-        self.assertEqual(result["server"]["port"], 3000)
-        self.assertEqual(len(result["server"]["middleware"]), 2)
-
-    def test_deeply_nested_objects(self):
-        result = parse("outer={inner={deep=\"value\"} number=42}")
-        self.assertEqual(result["outer"]["inner"]["deep"], "value")
-        self.assertEqual(result["outer"]["number"], 42)
-
-    def test_arrays_in_objects(self):
-        result = parse("data={items=[1, 2, 3] active=true}")
-        self.assertEqual(result["data"]["items"], [1, 2, 3])
-        self.assertTrue(result["data"]["active"])
-
-
-class TestErrors(unittest.TestCase):
-    """Tests for error handling."""
-
-    def test_error_unterminated_string(self):
-        with self.assertRaises(JhonParseError):
-            parse('name="unclosed string')
-
-    def test_error_expected_equals(self):
-        with self.assertRaises(JhonParseError):
-            parse('name "value"')
-
-    def test_error_unterminated_array(self):
-        with self.assertRaises(JhonParseError):
-            parse('items=[1, 2, 3')
-
-    def test_error_unterminated_nested_object(self):
-        with self.assertRaises(JhonParseError):
-            parse('server={host="localhost"')
-
-    def test_error_invalid_boolean(self):
-        with self.assertRaises(JhonParseError):
-            parse('active=troo')
-
-    def test_error_invalid_null(self):
-        with self.assertRaises(JhonParseError):
-            parse('value=nul')
-
-
-class TestSerialization(unittest.TestCase):
-    """Tests for serialization."""
-
-    def test_serialize_basic_object(self):
-        result = serialize({"name": "John", "age": 30})
-        self.assertEqual(result, 'age=30,name="John"')
-
-    def test_serialize_empty_object(self):
-        result = serialize({})
-        self.assertEqual(result, '')
-
-    def test_serialize_string(self):
-        result = serialize("hello world")
-        self.assertEqual(result, '"hello world"')
-
-    def test_serialize_string_with_escapes(self):
-        result = serialize("line1\nline2\ttab")
-        self.assertEqual(result, r'"line1\nline2\ttab"')
-
-    def test_serialize_string_with_quotes(self):
-        result = serialize('He said "hello"')
-        self.assertEqual(result, r'"He said \"hello\""')
-
-    def test_serialize_numbers(self):
-        result = serialize({"int": 42, "float": 3.14, "negative": -123})
-        self.assertEqual(result, 'float=3.14,int=42,negative=-123')
-
-    def test_serialize_boolean(self):
-        result = serialize({"active": True, "inactive": False})
-        self.assertEqual(result, 'active=true,inactive=false')
-
-    def test_serialize_null(self):
-        result = serialize({"empty": None})
-        self.assertEqual(result, 'empty=null')
-
-    def test_serialize_array(self):
-        result = serialize([1, 2, 3, "hello", True])
-        self.assertEqual(result, '[1,2,3,"hello",true]')
-
-    def test_serialize_empty_array(self):
-        result = serialize([])
-        self.assertEqual(result, '[]')
-
-    def test_serialize_nested_object(self):
-        result = serialize({"server": {"host": "localhost", "port": 8080}})
-        self.assertEqual(result, 'server={host="localhost",port=8080}')
-
-    def test_serialize_array_with_objects(self):
-        result = serialize([
-            {"name": "John", "age": 30},
-            {"name": "Jane", "age": 25}
-        ])
-        self.assertEqual(result, '[{age=30,name="John"},{age=25,name="Jane"}]')
-
-    def test_serialize_keys_with_special_chars(self):
-        result = serialize({"my key": "value1", "key@symbol": "value2"})
-        self.assertEqual(result, '"key@symbol"="value2","my key"="value1"')
-
-    def test_serialize_round_trip_simple(self):
-        original = {"name": "John", "age": 30, "active": True}
-        serialized = serialize(original)
-        parsed = parse(serialized)
-        self.assertEqual(parsed["name"], original["name"])
-        self.assertEqual(parsed["age"], original["age"])
-        self.assertEqual(parsed["active"], original["active"])
-
-    def test_serialize_round_trip_complex(self):
-        original = {
-            "app_name": "ocean-note",
-            "version": "2.0.0",
-            "database": {
-                "host": "localhost",
-                "port": 5432,
-                "ssl": True
-            },
-            "features": ["markdown", "collaboration", "real-time"]
-        }
-        serialized = serialize(original)
-        parsed = parse(serialized)
-        self.assertEqual(parsed["app_name"], original["app_name"])
-        self.assertEqual(parsed["database"]["host"], original["database"]["host"])
-
-
-class TestPrettySerialization(unittest.TestCase):
-    """Tests for pretty serialization."""
-
-    def test_serialize_pretty_basic_object(self):
-        result = serialize_pretty({"name": "John", "age": 30})
-        self.assertEqual(result, 'age = 30,\nname = "John"')
-
-    def test_serialize_pretty_nested_objects(self):
-        result = serialize_pretty({"server": {"host": "localhost", "port": 8080}})
-        self.assertEqual(result, 'server = {\n  host = "localhost",\n  port = 8080\n}')
-
-    def test_serialize_pretty_array(self):
-        result = serialize_pretty([1, 2, 3, "hello"])
-        self.assertEqual(result, '[\n  1,\n  2,\n  3,\n  "hello"\n]')
-
-    def test_serialize_pretty_array_with_objects(self):
-        result = serialize_pretty([
-            {"name": "John", "age": 30},
-            {"name": "Jane", "age": 25}
-        ])
-        expected = '[\n  {\n    age = 30,\n    name = "John"\n  },\n  {\n    age = 25,\n    name = "Jane"\n  }\n]'
-        self.assertEqual(result, expected)
-
-    def test_serialize_pretty_round_trip(self):
-        original = {
-            "name": "John",
-            "age": 30,
-            "active": True,
-            "tags": ["developer", "python"]
-        }
-        serialized = serialize_pretty(original)
-        parsed = parse(serialized)
-        self.assertEqual(parsed["name"], original["name"])
-        self.assertEqual(parsed["age"], original["age"])
-        self.assertEqual(parsed["tags"], original["tags"])
-
-
-class TestJSONCompatibility(unittest.TestCase):
-    """Tests for JSON compatibility."""
-
-    def test_json_round_trip(self):
-        original = {
-            "app_name": "ocean-note",
-            "version": "1.0.0",
-            "debug": True,
-            "features": ["markdown", "collaboration"]
-        }
-
-        # Serialize to JHON
-        jhon_string = serialize(original)
-
-        # Parse back
-        parsed = parse(jhon_string)
-
-        # Convert to JSON and back
-        json_string = json.dumps(parsed)
-        parsed_from_json = json.loads(json_string)
-
-        self.assertEqual(parsed_from_json, original)
-
-    def test_jhon_vs_json_size(self):
-        data = {
-            "app_name": "ocean-note",
-            "version": "1.0.0",
-            "debug": True,
-            "database": {
-                "host": "localhost",
-                "port": 5432,
-                "name": "mydb"
-            },
-            "features": ["markdown", "collaboration", "real-time"]
-        }
-
-        jhon_string = serialize(data)
-        json_string = json.dumps(data, separators=(',', ':'))
-
-        # JHON should be smaller or similar size
-        print(f"\nJHON size: {len(jhon_string)} bytes")
-        print(f"JSON size: {len(json_string)} bytes")
-        print(f"JHON is {len(jhon_string) / len(json_string) * 100:.1f}% of JSON size")
-
-
-class TestExampleFile(unittest.TestCase):
-    """Test with the example file."""
-
-    def test_example_file_parsing(self):
-        jhon_input = """
-        // Example JHON Configuration File
-        app_name="ocean-note"
-        version="1.0.0"
-        debug=true
-
-        // Database Configuration
-        database={host="localhost",port=5432,name="mydb"}
-
-        // Feature Flags
-        features=["markdown","collaboration","real-time"]
-
-        // Numeric Settings
-        max_file_size=1048576
-        timeout=30.5
-
-        // Nested Objects
-        server={host="0.0.0.0",port=3000,middleware=[{name="logger",enabled=true},{name="cors",enabled=false}]}
-
-        // Keys with Hyphens
-        log-level="info"
-        cache-ttl=3600
-
-        // Single and Double Quotes
-        double_quoted="hello world"
-        single_quoted='another value'
-
-        // Raw String
-        windows_path=r"C:\Windows\System32"
-
-        // Null Value
-        optional_config=null
-        """
-
-        result = parse(jhon_input)
-
-        # Verify some values
-        self.assertEqual(result["app_name"], "ocean-note")
-        self.assertEqual(result["version"], "1.0.0")
-        self.assertTrue(result["debug"])
-        self.assertEqual(result["database"]["host"], "localhost")
-        self.assertEqual(result["database"]["port"], 5432)
-        self.assertEqual(result["features"], ["markdown", "collaboration", "real-time"])
-        self.assertEqual(result["windows_path"], r"C:\Windows\System32")
-        self.assertIsNone(result["optional_config"])
-
-
-class TestComplexScenarios(unittest.TestCase):
-    """Tests for complex scenarios."""
-
-    def test_very_nested_structure(self):
-        result = parse("""
-            level1={
-                level2={
-                    level3={
-                        deep="value"
-                    }
-                }
-            }
-        """)
-        self.assertEqual(result["level1"]["level2"]["level3"]["deep"], "value")
-
-    def test_multiple_arrays(self):
-        result = parse("""
-            arrays={
-                strings=["a", "b", "c"]
-                numbers=[1, 2, 3]
-                mixed=[true, null, "text"]
-            }
-        """)
-        self.assertEqual(result["arrays"]["strings"], ["a", "b", "c"])
-        self.assertEqual(result["arrays"]["numbers"], [1, 2, 3])
-        self.assertEqual(result["arrays"]["mixed"], [True, None, "text"])
-
-    def test_empty_nested_objects(self):
-        result = parse("empty={nested={}} another={}")
-        self.assertEqual(result["empty"]["nested"], {})
-        self.assertEqual(result["another"], {})
-
-    def test_unicode_values(self):
-        result = parse('text="Hello 世界 🌍" emoji="❤️"')
-        self.assertEqual(result["text"], "Hello 世界 🌍")
-        self.assertIn("❤", result["emoji"])
-
-
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+import pytest
+
+from jhon import JhonParseError, parse, serialize, serialize_pretty
+
+
+# =============================================================================
+# §2 document form
+# =============================================================================
+
+
+def test_empty_input_parses_to_empty_object():
+    assert parse("") == {}
+
+
+def test_whitespace_only_input_parses_to_empty_object():
+    assert parse("   \n\t\r\n  ") == {}
+
+
+def test_comments_only_input_parses_to_empty_object():
+    assert parse("// just a comment\n/* block */") == {}
+
+
+def test_top_level_object_without_braces():
+    assert parse('name="x",port=80') == {"name": "x", "port": 80}
+
+
+def test_top_level_object_with_braces():
+    assert parse('{name="x",port=80}') == {"name": "x", "port": 80}
+
+
+def test_top_level_array_alone():
+    assert parse("[1, 2, 3]") == [1, 2, 3]
+
+
+def test_top_level_scalar_number_is_error():
+    with pytest.raises(JhonParseError):
+        parse("42")
+
+
+def test_top_level_scalar_string_is_error():
+    with pytest.raises(JhonParseError):
+        parse('"hello"')
+
+
+def test_top_level_scalar_boolean_is_error():
+    with pytest.raises(JhonParseError):
+        parse("true")
+
+
+def test_top_level_scalar_null_is_error():
+    with pytest.raises(JhonParseError):
+        parse("null")
+
+
+def test_top_level_array_followed_by_pairs_is_error():
+    with pytest.raises(JhonParseError):
+        parse("[1, 2] key=value")
+
+
+# =============================================================================
+# §3.2 comments
+# =============================================================================
+
+
+def test_single_line_comment_trailing():
+    assert parse('key="value" // trailing comment') == {"key": "value"}
+
+
+def test_block_comment_inline():
+    assert parse('key=/* inline */"value"') == {"key": "value"}
+
+
+def test_block_comment_spanning_lines():
+    assert parse('key=/* spans\nmultiple\nlines */"value"') == {"key": "value"}
+
+
+def test_unterminated_block_comment_is_error():
+    with pytest.raises(JhonParseError):
+        parse("key=/* unterminated")
+
+
+# =============================================================================
+# §3.3 bare keys
+# =============================================================================
+
+
+def test_simple_identifier_key():
+    assert parse('keyname="value"') == {"keyname": "value"}
+
+
+def test_keyword_true_as_string_key():
+    assert parse('true="yes"') == {"true": "yes"}
+
+
+def test_keyword_false_as_string_key():
+    assert parse('false="no"') == {"false": "no"}
+
+
+def test_keyword_null_as_string_key():
+    assert parse('null="nothing"') == {"null": "nothing"}
+
+
+def test_key_with_hyphen():
+    assert parse('my-key="value"') == {"my-key": "value"}
+
+
+def test_key_with_underscore_and_digits():
+    assert parse('key_1="value"') == {"key_1": "value"}
+
+
+def test_key_with_dot():
+    assert parse("app.version=1") == {"app.version": 1}
+
+
+def test_unicode_key():
+    assert parse('日本語="value"') == {"日本語": "value"}
+
+
+def test_quoted_key_with_spaces():
+    assert parse('"quoted key"="value"') == {"quoted key": "value"}
+
+
+# =============================================================================
+# §3.4 strings
+# =============================================================================
+
+
+def test_double_quoted_string():
+    assert parse('key="value"') == {"key": "value"}
+
+
+def test_single_quoted_string():
+    assert parse("key='value'") == {"key": "value"}
+
+
+def test_string_escape_newline_and_tab():
+    assert parse(r'newline="hello\nworld",tab="tab\there"') == {
+        "newline": "hello\nworld",
+        "tab": "tab\there",
+    }
+
+
+def test_string_escape_unicode():
+    assert parse('copy="©"') == {"copy": "©"}
+
+
+def test_string_escape_quote_and_backslash():
+    assert parse(r'q="say \"hi\"",bs="a\\b"') == {"q": 'say "hi"', "bs": "a\\b"}
+
+
+def test_raw_string_basic():
+    assert parse(r'path=r"C:\Windows\System32"') == {"path": "C:\\Windows\\System32"}
+
+
+def test_raw_string_with_hashes():
+    assert parse(r'q=r#"contains "quotes""#') == {"q": 'contains "quotes"'}
+
+
+def test_unrecognized_escape_is_error():
+    with pytest.raises(JhonParseError):
+        parse(r'key="value\q"')
+
+
+def test_unterminated_string_is_error():
+    with pytest.raises(JhonParseError):
+        parse('key="unterminated')
+
+
+# =============================================================================
+# §3.5 numbers
+# =============================================================================
+
+
+def test_decimal_integer():
+    assert parse("n=42") == {"n": 42}
+
+
+def test_negative_integer():
+    assert parse("n=-5") == {"n": -5}
+
+
+def test_number_with_underscores():
+    assert parse("n=1_000_000") == {"n": 1_000_000}
+
+
+def test_negative_number_with_underscores():
+    assert parse("n=-50_000") == {"n": -50_000}
+
+
+def test_float_fractional():
+    assert parse("n=12.5") == {"n": 12.5}
+
+
+def test_negative_float():
+    assert parse("n=-45.67") == {"n": -45.67}
+
+
+def test_float_with_exponent_only():
+    assert parse("n=1e10") == {"n": 1e10}
+
+
+def test_float_with_fractional_and_exponent():
+    assert parse("n=1.5E-3") == {"n": 1.5e-3}
+
+
+def test_hex_literal_lowercase():
+    assert parse("n=0xff") == {"n": 255}
+
+
+def test_hex_literal_uppercase_digits():
+    assert parse("n=0xDE_AD") == {"n": 0xDE_AD}
+
+
+def test_octal_literal():
+    assert parse("n=0o777") == {"n": 0o777}
+
+
+def test_binary_literal():
+    assert parse("n=0b1010") == {"n": 0b1010}
+
+
+def test_negative_hex_literal():
+    assert parse("n=-0xff") == {"n": -255}
+
+
+def test_positive_with_plus_prefix_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=+5")
+
+
+def test_uppercase_hex_prefix_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=0Xff")
+
+
+def test_uppercase_octal_prefix_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=0O77")
+
+
+def test_uppercase_binary_prefix_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=0B10")
+
+
+def test_number_type_suffix_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=5u8")
+
+
+def test_leading_underscore_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=_5")
+
+
+def test_trailing_underscore_is_error():
+    with pytest.raises(JhonParseError):
+        parse("n=5_")
+
+
+def test_adjacent_underscores_are_error():
+    with pytest.raises(JhonParseError):
+        parse("n=5__5")
+
+
+# =============================================================================
+# §5 objects
+# =============================================================================
+
+
+def test_basic_key_value_pairs():
+    assert parse('name="John",age=30,active=true') == {
+        "name": "John",
+        "age": 30,
+        "active": True,
+    }
+
+
+def test_nested_object():
+    assert parse('server={host="localhost", port=8080}') == {
+        "server": {"host": "localhost", "port": 8080}
+    }
+
+
+def test_whitespace_around_equals_is_insignificant():
+    assert parse("a=1, b = 2 , c=3") == {"a": 1, "b": 2, "c": 3}
+
+
+def test_duplicate_keys_at_top_level_are_error():
+    with pytest.raises(JhonParseError):
+        parse("a=1, a=2")
+
+
+def test_duplicate_keys_in_nested_object_are_error():
+    with pytest.raises(JhonParseError):
+        parse("outer={a=1, a=2}")
+
+
+# =============================================================================
+# §5.3 separators
+# =============================================================================
+
+
+def test_same_line_comma_separated():
+    assert parse("a=1, b=2, c=3") == {"a": 1, "b": 2, "c": 3}
+
+
+def test_newline_separated_multiline():
+    assert parse("a=1\nb=2\nc=3") == {"a": 1, "b": 2, "c": 3}
+
+
+def test_mixed_comma_and_newline_separators():
+    assert parse("a=1,\nb=2,\nc=3") == {"a": 1, "b": 2, "c": 3}
+
+
+def test_trailing_comma_at_top_level():
+    assert parse("a=1, b=2,") == {"a": 1, "b": 2}
+
+
+def test_trailing_comma_in_braced_object():
+    assert parse("{a=1, b=2,}") == {"a": 1, "b": 2}
+
+
+def test_trailing_comma_in_array():
+    assert parse("[1, 2, 3,]") == [1, 2, 3]
+
+
+def test_whitespace_around_comma_is_insignificant():
+    assert parse("a=1,b=2, c=3 ,d=4") == {"a": 1, "b": 2, "c": 3, "d": 4}
+
+
+def test_same_line_space_only_separator_is_error():
+    with pytest.raises(JhonParseError):
+        parse("a=1 b=2")
+
+
+def test_same_line_tab_only_separator_is_error():
+    with pytest.raises(JhonParseError):
+        parse("a=1\tb=2")
+
+
+def test_array_same_line_no_commas_is_error():
+    with pytest.raises(JhonParseError):
+        parse("[1 2 3]")
+
+
+# =============================================================================
+# §6 arrays
+# =============================================================================
+
+
+def test_empty_array():
+    assert parse("items=[]") == {"items": []}
+
+
+def test_array_of_strings():
+    assert parse('items=["a", "b", "c"]') == {"items": ["a", "b", "c"]}
+
+
+def test_array_mixed_types():
+    assert parse('mixed=[1, "two", true, null]') == {"mixed": [1, "two", True, None]}
+
+
+def test_nested_arrays():
+    assert parse("nested=[[1, 2], [3, 4]]") == {"nested": [[1, 2], [3, 4]]}
+
+
+def test_multiline_array_newline_separated():
+    assert parse("list=[\n1\n2\n3\n]") == {"list": [1, 2, 3]}
+
+
+def test_unbalanced_array_is_error():
+    with pytest.raises(JhonParseError):
+        parse("[1, 2, 3")
+
+
+def test_unbalanced_braces_are_error():
+    with pytest.raises(JhonParseError):
+        parse("{a=1, b=2")
+
+
+# =============================================================================
+# §7 serialization
+# =============================================================================
+
+
+def test_compact_serialize_no_spaces_around_equals():
+    assert serialize({"name": "John", "age": 30}) == 'name="John",age=30'
+
+
+def test_compact_serialize_nested_object():
+    assert serialize({"server": {"host": "localhost", "port": 8080}}) == (
+        'server={host="localhost",port=8080}'
+    )
+
+
+def test_compact_serialize_top_level_array():
+    assert serialize([{"a": 1}, {"b": 2}]) == "[{a=1},{b=2}]"
+
+
+def test_compact_serialize_has_no_trailing_comma():
+    assert serialize({"a": 1, "b": 2, "c": 3}) == "a=1,b=2,c=3"
+
+
+def test_pretty_serialize_spaces_around_equals_no_trailing_commas():
+    assert serialize_pretty({"name": "John", "age": 30}) == 'name = "John"\nage = 30'
+
+
+def test_pretty_serialize_nested_object():
+    assert serialize_pretty({"server": {"host": "localhost", "port": 5432}}) == (
+        'server = {\n  host = "localhost"\n  port = 5432\n}'
+    )
+
+
+def test_pretty_serialize_array_no_trailing_commas():
+    assert serialize_pretty([1, 2, 3]) == "[\n  1\n  2\n  3\n]"
+
+
+def test_round_trip_compact_preserves_value():
+    original = {
+        "name": "John",
+        "age": 30,
+        "server": {"host": "localhost", "port": 5432},
+    }
+    assert parse(serialize(original)) == original
+
+
+def test_round_trip_pretty_preserves_value():
+    original = {
+        "name": "John",
+        "age": 30,
+        "server": {"host": "localhost", "port": 5432},
+    }
+    assert parse(serialize_pretty(original)) == original
+
+
+def test_hex_octal_binary_serialize_as_decimal():
+    assert serialize({"hex": 0xFF, "oct": 0o777, "bin": 0b1010}) == (
+        "hex=255,oct=511,bin=10"
+    )
+
+
+# =============================================================================
+# Error positioning
+# =============================================================================
+
+
+def test_syntax_error_reports_line_and_column():
+    with pytest.raises(JhonParseError) as ei:
+        parse("a=1\nb=+5")
+    err = ei.value
+    assert err.line == 2
+    assert err.column == 3
+    assert "+" in err.message
+
+
+def test_duplicate_key_error_reports_key():
+    with pytest.raises(JhonParseError) as ei:
+        parse("a=1, a=2")
+    err = ei.value
+    assert err.kind == "duplicate-key"
+    assert err.duplicate_key == "a"
+
+
+def test_unterminated_string_reports_eof():
+    with pytest.raises(JhonParseError) as ei:
+        parse('key="unfinished')
+    err = ei.value
+    assert "unterminated" in err.message.lower()

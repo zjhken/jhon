@@ -1,708 +1,802 @@
 """
-JHON - JinHui's Object Notation
-A configuration language parser and serializer for Python
+JHON - JinHui's Object Notation.
+
+Parser and serializer mirroring rust/src/lib.rs. Strict per SPEC.md — every
+error case in §8 raises JhonParseError with 1-based line and column.
 """
 
 from __future__ import annotations
-import re
-import json
-from typing import Any, Dict, List, Union
+
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # =============================================================================
-# Exceptions
+# Public exception
 # =============================================================================
+
 
 class JhonParseError(Exception):
-    """Exception raised when parsing JHON fails."""
-    def __init__(self, message: str, position: int = -1):
+    """Raised by `parse` on invalid input. Carries 1-based line/column."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        line: int = 0,
+        column: int = 0,
+        end_line: Optional[int] = None,
+        end_column: Optional[int] = None,
+        position: int = -1,
+        kind: str = "syntax",
+        duplicate_key: Optional[str] = None,
+    ) -> None:
         self.message = message
+        self.line = line
+        self.column = column
+        self.end_line = end_line if end_line is not None else line
+        self.end_column = end_column if end_column is not None else column + 1
         self.position = position
-        super().__init__(f"parse error at position {position}: {message}" if position >= 0 else message)
+        self.kind = kind
+        self.duplicate_key = duplicate_key
+        super().__init__(self._format())
+
+    def _format(self) -> str:
+        if self.duplicate_key is not None:
+            return f'duplicate key at {self.line}:{self.column}: "{self.duplicate_key}"'
+        if self.line == 0 and self.column == 0:
+            return f'parse error: {self.message}'
+        where = (
+            "unexpected end of input"
+            if self.kind == "eof"
+            else "parse error"
+        )
+        return f'{where} at {self.line}:{self.column}: {self.message}'
+
+
+# =============================================================================
+# Character classification
+# =============================================================================
+
+_KEY_DELIMITERS = frozenset(" \t\n\r=,{}[]/\"'#")
+
+
+def _is_key_delimiter(c: str) -> bool:
+    return c in _KEY_DELIMITERS
+
+
+def _is_dec_digit(c: str) -> bool:
+    return "0" <= c <= "9"
+
+
+def _is_hex_digit(c: str) -> bool:
+    return ("0" <= c <= "9") or ("a" <= c <= "f") or ("A" <= c <= "F")
+
+
+def _hex_value(c: str) -> int:
+    if "0" <= c <= "9":
+        return ord(c) - ord("0")
+    if "a" <= c <= "f":
+        return ord(c) - ord("a") + 10
+    return ord(c) - ord("A") + 10
+
+
+def _is_ascii_alphanumeric(c: str) -> bool:
+    return (
+        ("0" <= c <= "9")
+        or ("a" <= c <= "z")
+        or ("A" <= c <= "Z")
+    )
 
 
 # =============================================================================
 # Parser
 # =============================================================================
 
+
 class Parser:
-    def __init__(self, input: str):
+    """Hand-written recursive descent parser. Tracks 1-based line and column."""
+
+    def __init__(self, input: str) -> None:
         self.input = input
+        self.len = len(input)
         self.pos = 0
-        self.length = len(input)
+        self.line = 1
+        self.col = 1
 
-    def parse_jhon_object(self) -> Dict[str, Any]:
-        """Parse a top-level JHON object."""
-        obj = {}
-        is_first = True
+    # ------------------------------------------------------------------ cursor
 
-        while self.pos < self.length:
-            if not is_first:
-                if not self._peek_separator(0):
-                    raise JhonParseError("Expected comma or newline between properties", self.pos)
-                self._skip_separators()
+    def _current(self) -> str:
+        return self.input[self.pos] if self.pos < self.len else ""
 
-            self._skip_spaces_and_tabs()
+    def _peek(self, offset: int) -> str:
+        idx = self.pos + offset
+        return self.input[idx] if 0 <= idx < self.len else ""
 
-            if self.pos >= self.length:
+    def _at_end(self) -> bool:
+        return self.pos >= self.len
+
+    def _advance(self) -> str:
+        if self.pos >= self.len:
+            return ""
+        c = self.input[self.pos]
+        if c == "\n":
+            self.line += 1
+            self.col = 1
+        else:
+            self.col += 1
+        self.pos += 1
+        return c
+
+    def _syntax_err(self, msg: str, *, kind: str = "syntax") -> JhonParseError:
+        return JhonParseError(
+            msg,
+            line=self.line,
+            column=self.col,
+            end_line=self.line,
+            end_column=self.col + 1,
+            position=self.pos,
+            kind="eof" if self._at_end() else kind,
+        )
+
+    # -------------------------------------------------------- whitespace / comments
+
+    def _skip_ws_and_comments(self) -> bool:
+        """Skip whitespace and comments. Returns whether a newline was seen."""
+        saw_newline = False
+        while True:
+            c = self._current()
+            if not c:
                 break
+            if c in " \t\r":
+                self._advance()
+            elif c == "\n":
+                saw_newline = True
+                self._advance()
+            elif c == "/" and self._peek(1) == "/":
+                self._advance()
+                self._advance()
+                while self._current() and self._current() != "\n":
+                    self._advance()
+            elif c == "/" and self._peek(1) == "*":
+                self._advance()
+                self._advance()
+                while self._current():
+                    if self._current() == "*" and self._peek(1) == "/":
+                        self._advance()
+                        self._advance()
+                        break
+                    if self._current() == "\n":
+                        saw_newline = True
+                    self._advance()
+            else:
+                break
+        return saw_newline
 
-            key = self._parse_key()
-            self._skip_whitespace()
+    def _skip_inter_item_separator(self) -> Tuple[bool, bool]:
+        """Returns (saw_newline, saw_comma). Per SPEC §5.3 same-line items need a comma."""
+        saw_newline = self._skip_ws_and_comments()
+        saw_comma = False
+        if self._current() == ",":
+            saw_comma = True
+            self._advance()
+            if self._skip_ws_and_comments():
+                saw_newline = True
+        return saw_newline, saw_comma
 
-            if self.pos >= self.length or self.input[self.pos] != '=':
-                raise JhonParseError("Expected '=' after key", self.pos)
-            self.pos += 1
+    # --------------------------------------------------------------- top-level dispatch
 
-            self._skip_whitespace()
+    def parse(self) -> Any:
+        self._skip_ws_and_comments()
+        if self._at_end():
+            return {}
+        first = self._current()
+        if first == "{":
+            return self._parse_nested_object()
+        if first == "[":
+            arr = self._parse_array()
+            self._skip_ws_and_comments()
+            if not self._at_end():
+                raise self._syntax_err("unexpected content after top-level array")
+            return arr
+        return self._parse_jhon_object()
 
-            value = self._parse_value()
-            obj[key] = value
-
-            is_first = False
-
+    def _parse_jhon_object(self) -> Dict[str, Any]:
+        obj: Dict[str, Any] = {}
+        self._skip_ws_and_comments()
+        while self.pos < self.len:
+            self._parse_property_into(obj)
+            saw_newline, saw_comma = self._skip_inter_item_separator()
+            if self._at_end():
+                break
+            if not saw_newline and not saw_comma:
+                raise self._syntax_err("items on the same line must be separated by a comma")
         return obj
 
-    def parse_nested_object(self) -> Dict[str, Any]:
-        """Parse a nested JHON object {key=value, ...}."""
-        if self.pos >= self.length or self.input[self.pos] != '{':
-            raise JhonParseError("Expected '{'", self.pos)
-        self.pos += 1
-
-        obj = {}
-        is_first = True
-
-        while self.pos < self.length:
-            if not is_first:
-                if not self._peek_separator('}'):
-                    raise JhonParseError("Expected comma or newline between object properties", self.pos)
-                self._skip_separators()
-
-            self._skip_spaces_and_tabs()
-
-            if self.pos >= self.length:
-                raise JhonParseError("Unterminated nested object", self.pos)
-
-            if self.input[self.pos] == '}':
-                self.pos += 1
+    def _parse_nested_object(self) -> Dict[str, Any]:
+        self._advance()  # {
+        obj: Dict[str, Any] = {}
+        self._skip_ws_and_comments()
+        while True:
+            c = self._current()
+            if not c:
+                raise self._syntax_err("unterminated nested object")
+            if c == "}":
+                self._advance()
                 return obj
+            self._parse_property_into(obj)
+            saw_newline, saw_comma = self._skip_inter_item_separator()
+            if self._current() == "}":
+                self._advance()
+                return obj
+            if self._at_end():
+                raise self._syntax_err("unterminated nested object")
+            if not saw_newline and not saw_comma:
+                raise self._syntax_err("items on the same line must be separated by a comma")
 
-            key = self._parse_key()
-            self._skip_whitespace()
-
-            if self.pos >= self.length or self.input[self.pos] != '=':
-                raise JhonParseError("Expected '=' after key in nested object", self.pos)
-            self.pos += 1
-
-            self._skip_whitespace()
-
-            value = self._parse_value()
-            obj[key] = value
-
-            is_first = False
-
-        raise JhonParseError("Unterminated nested object", self.pos)
+    def _parse_property_into(self, obj: Dict[str, Any]) -> None:
+        key = self._parse_key()
+        self._skip_ws_and_comments()
+        if self._current() != "=":
+            raise self._syntax_err("expected '=' after key")
+        self._advance()
+        self._skip_ws_and_comments()
+        value = self._parse_value()
+        if key in obj:
+            raise JhonParseError(
+                f'duplicate key "{key}"',
+                line=self.line,
+                column=self.col,
+                end_line=self.line,
+                end_column=self.col + 1,
+                position=self.pos,
+                kind="duplicate-key",
+                duplicate_key=key,
+            )
+        obj[key] = value
 
     def _parse_key(self) -> str:
-        """Parse a JHON key (quoted or unquoted)."""
-        self._skip_whitespace()
+        self._skip_ws_and_comments()
+        c = self._current()
+        if not c:
+            raise self._syntax_err("expected key")
+        if c == '"' or c == "'":
+            return self._parse_string(c)
+        start = self.pos
+        while self.pos < self.len and not _is_key_delimiter(self.input[self.pos]):
+            self._advance()
+        if self.pos == start:
+            raise self._syntax_err("empty key")
+        return self.input[start:self.pos]
 
-        if self.pos >= self.length:
-            raise JhonParseError("Expected key", self.pos)
-
-        c = self.input[self.pos]
-
-        if c in ('"', "'"):
-            quote_char = c
-            self.pos += 1
-
-            result = []
-            while self.pos < self.length:
-                if self.input[self.pos] == quote_char:
-                    self.pos += 1
-                    return ''.join(result)
-                elif self.input[self.pos] == '\\':
-                    self.pos += 1
-                    if self.pos < self.length:
-                        result.append(self._parse_escape_sequence(quote_char))
-                else:
-                    result.append(self.input[self.pos])
-                    self.pos += 1
-
-            raise JhonParseError("Unterminated string in key", self.pos)
-        else:
-            start = self.pos
-            while self.pos < self.length and self._is_unquoted_key_char(self.input[self.pos]):
-                self.pos += 1
-
-            key = self.input[start:self.pos]
-            if not key:
-                raise JhonParseError("Empty key", self.pos)
-            return key
+    # ----------------------------------------------------------------- value dispatch
 
     def _parse_value(self) -> Any:
-        """Parse a JHON value."""
-        self._skip_whitespace()
-
-        if self.pos >= self.length:
-            raise JhonParseError("Expected value", self.pos)
-
-        c = self.input[self.pos]
-
-        if c in ('"', "'"):
-            return self._parse_string_value()
-        elif c in ('r', 'R'):
-            return self._parse_raw_string_value()
-        elif c == '[':
+        self._skip_ws_and_comments()
+        c = self._current()
+        if not c:
+            raise self._syntax_err("expected value")
+        if c == '"' or c == "'":
+            return self._parse_string(c)
+        if c == "r" or c == "R":
+            nxt = self._peek(1)
+            if nxt == '"' or nxt == "#":
+                return self._parse_raw_string()
+            raise self._syntax_err(f"unexpected character in value: {c}")
+        if c == "[":
             return self._parse_array()
-        elif c == '{':
-            return self.parse_nested_object()
-        elif c.isdigit() or c == '-':
+        if c == "{":
+            return self._parse_nested_object()
+        if c == "-" or _is_dec_digit(c):
             return self._parse_number()
-        elif c in ('t', 'f'):
+        if c == "t" or c == "f":
             return self._parse_boolean()
-        elif c == 'n':
+        if c == "n":
             return self._parse_null()
+        raise self._syntax_err(f"unexpected character in value: {c}")
 
-        raise JhonParseError(f"Unexpected character in value: {c}", self.pos)
-
-    def _parse_string_value(self) -> str:
-        """Parse a quoted string value."""
-        quote_char = self.input[self.pos]
-        self.pos += 1
-
-        result = []
-        while self.pos < self.length:
-            if self.input[self.pos] == quote_char:
+    def _parse_string(self, quote: str) -> str:
+        self._advance()  # opening quote
+        # Fast path: no escape, no control char — single slice.
+        # Scan ahead for the next interesting byte and consume the run.
+        input_str = self.input
+        n = self.len
+        out: List[str] = []
+        while True:
+            start = self.pos
+            # Advance over plain chars until we hit a special byte.
+            while self.pos < n:
+                c = input_str[self.pos]
+                co = ord(c)
+                if co < 0x20 or co == 0x7F:
+                    raise self._syntax_err(
+                        f"literal control character 0x{co:02X} in string; use an escape or a raw string"
+                    )
+                if c == quote or c == "\\":
+                    break
+                self.col += 1
                 self.pos += 1
-                return ''.join(result)
-            elif self.input[self.pos] == '\\':
-                self.pos += 1
-                if self.pos < self.length:
-                    result.append(self._parse_escape_sequence(quote_char))
+            if self.pos > start:
+                out.append(input_str[start:self.pos])
+            c = self._current()
+            if not c:
+                raise self._syntax_err("unterminated string")
+            if c == quote:
+                self._advance()
+                return "".join(out)
+            # c == "\\"
+            self._advance()
+            esc = self._current()
+            if not esc:
+                raise self._syntax_err("incomplete escape sequence")
+            self._advance()
+            if esc == "n":
+                out.append("\n")
+            elif esc == "r":
+                out.append("\r")
+            elif esc == "t":
+                out.append("\t")
+            elif esc == "b":
+                out.append("\b")
+            elif esc == "f":
+                out.append("\f")
+            elif esc == "\\":
+                out.append("\\")
+            elif esc == '"':
+                out.append('"')
+            elif esc == "'":
+                out.append("'")
+            elif esc == "/":
+                out.append("/")
+            elif esc == "x":
+                v = self._parse_hex_digits(2, "\\x")
+                out.append(chr(v))
+            elif esc == "u":
+                v = self._parse_hex_digits(4, "\\u")
+                if 0xD800 <= v <= 0xDFFF:
+                    raise self._syntax_err(
+                        f"surrogate code point U+{v:04X} requires a pair; surrogate handling is not yet implemented"
+                    )
+                out.append(chr(v))
             else:
-                result.append(self.input[self.pos])
-                self.pos += 1
+                raise self._syntax_err(f"unknown escape \\{esc}")
 
-        raise JhonParseError("Unterminated string", self.pos)
+    def _parse_hex_digits(self, count: int, label: str) -> int:
+        v = 0
+        for _ in range(count):
+            c = self._current()
+            if not c or not _is_hex_digit(c):
+                raise self._syntax_err(f"incomplete {label} escape")
+            v = (v << 4) | _hex_value(c)
+            self._advance()
+        return v
 
-    def _parse_raw_string_value(self) -> str:
-        """Parse a raw string value (r"..." or r#"..."#)."""
-        if self.pos >= self.length or self.input[self.pos] not in ('r', 'R'):
-            raise JhonParseError("Expected raw string", self.pos)
-        self.pos += 1
-
-        if self.pos >= self.length:
-            raise JhonParseError("Unexpected end of input in raw string", self.pos)
-
-        # Count hash symbols
+    def _parse_raw_string(self) -> str:
+        self._advance()  # r or R
         hash_count = 0
-        while self.pos < self.length and self.input[self.pos] == '#':
+        while self._current() == "#":
             hash_count += 1
-            self.pos += 1
-
-        if self.pos >= self.length or self.input[self.pos] != '"':
-            raise JhonParseError("Expected opening quote after r and # symbols in raw string", self.pos)
-        self.pos += 1
-
+            self._advance()
+        if self._current() != '"':
+            raise self._syntax_err("expected opening quote after r and # symbols in raw string")
+        self._advance()
         start = self.pos
+        closing = '"' + ("#" * hash_count)
+        idx = self.input.find(closing, start)
+        if idx < 0:
+            while self.pos < self.len:
+                self._advance()
+            raise self._syntax_err(f"unterminated raw string (expected closing {closing!r})")
+        value = self.input[start:idx]
+        target = idx + len(closing)
+        while self.pos < target:
+            self._advance()
+        return value
 
-        # Look for closing sequence
-        while self.pos < self.length:
-            if self.input[self.pos] == '"':
-                if self.pos + hash_count < self.length:
-                    is_closing = True
-                    for j in range(1, hash_count + 1):
-                        if self.input[self.pos + j] != '#':
-                            is_closing = False
-                            break
+    def _parse_number(self) -> Any:
+        negative = self._current() == "-"
+        if negative:
+            self._advance()
 
-                    if is_closing:
-                        content = self.input[start:self.pos]
-                        self.pos += hash_count + 1
-                        return content
+        radix = 0
+        if self._current() == "0":
+            nxt = self._peek(1)
+            if nxt == "x":
+                radix = 16
+            elif nxt == "o":
+                radix = 8
+            elif nxt == "b":
+                radix = 2
+            elif nxt in ("X", "O", "B"):
+                raise self._syntax_err(
+                    f"uppercase radix prefix 0{nxt} not allowed; use lowercase"
+                )
 
-            self.pos += 1
-
-        raise JhonParseError(f"Unterminated raw string (expected closing: \"{'#' * hash_count}\")", self.pos)
-
-    def _parse_escape_sequence(self, quote_char: str) -> str:
-        """Parse an escape sequence."""
-        if self.pos >= self.length:
-            raise JhonParseError("Incomplete escape sequence", self.pos)
-
-        c = self.input[self.pos]
-        self.pos += 1
-
-        escape_map = {
-            'n': '\n',
-            'r': '\r',
-            't': '\t',
-            'b': '\b',
-            'f': '\f',
-            '\\': '\\',
-            '"': '"',
-            "'": "'",
-        }
-
-        if c == 'u':
-            # Unicode escape
-            if self.pos + 3 >= self.length:
-                raise JhonParseError("Incomplete Unicode escape sequence", self.pos)
-            hex_str = self.input[self.pos:self.pos + 4]
-            self.pos += 4
-            try:
-                code_point = int(hex_str, 16)
-                return chr(code_point)
-            except ValueError:
-                raise JhonParseError("Invalid Unicode escape sequence", self.pos - 4)
-        elif c in escape_map:
-            return escape_map[c]
+        is_float = False
+        if radix:
+            self._advance()
+            self._advance()
+            literal = self._scan_radix_digits(radix)
         else:
-            # Unknown escape, return as literal
-            return c
+            literal = self._scan_dec_digits()
+            if self._current() == ".":
+                is_float = True
+                self._advance()
+                literal = f"{literal}.{self._scan_dec_digits()}"
+            if self._current() in ("e", "E"):
+                is_float = True
+                self._advance()
+                exp = "e"
+                if self._current() in ("+", "-"):
+                    exp += self._current()
+                    self._advance()
+                literal = f"{literal}{exp}{self._scan_dec_digits()}"
 
-    def _parse_array(self) -> List[Any]:
-        """Parse an array value."""
-        if self.pos >= self.length or self.input[self.pos] != '[':
-            raise JhonParseError("Expected '['", self.pos)
-        self.pos += 1
+        cur = self._current()
+        nxt = self._peek(1)
+        if cur in ("u", "i", "f") and nxt and _is_ascii_alphanumeric(nxt):
+            raise self._syntax_err(
+                f"number type suffix not allowed (saw '{cur}{nxt}')"
+            )
 
-        elements = []
-        is_first = True
+        if radix:
+            return -int(literal, radix) if negative else int(literal, radix)
 
-        while self.pos < self.length:
-            if not is_first:
-                if not self._peek_separator(']'):
-                    raise JhonParseError("Expected comma or newline between array elements", self.pos)
-                self._skip_separators()
-
-            self._skip_spaces_and_tabs()
-
-            if self.pos >= self.length:
-                raise JhonParseError("Unterminated array", self.pos)
-
-            if self.input[self.pos] == ']':
-                self.pos += 1
-                return elements
-
-            elements.append(self._parse_value())
-            is_first = False
-
-        raise JhonParseError("Unterminated array", self.pos)
-
-    def _parse_number(self) -> float | int:
-        """Parse a number value."""
-        start = self.pos
-
-        # Optional minus
-        if self.pos < self.length and self.input[self.pos] == '-':
-            self.pos += 1
-
-        # Digits before decimal (underscores allowed)
-        has_digits = False
-        while self.pos < self.length and (self.input[self.pos].isdigit() or self.input[self.pos] == '_'):
-            if self.input[self.pos] != '_':
-                has_digits = True
-            self.pos += 1
-
-        if not has_digits:
-            raise JhonParseError("Invalid number", self.pos)
-
-        # Optional decimal part
-        if self.pos < self.length and self.input[self.pos] == '.':
-            self.pos += 1
-            has_decimal_digits = False
-            while self.pos < self.length and (self.input[self.pos].isdigit() or self.input[self.pos] == '_'):
-                if self.input[self.pos] != '_':
-                    has_decimal_digits = True
-                self.pos += 1
-            if not has_decimal_digits:
-                raise JhonParseError("Invalid decimal number", self.pos)
-
-        # Build number string without underscores
-        num_str = self.input[start:self.pos].replace('_', '')
-
+        if not is_float:
+            try:
+                return -int(literal) if negative else int(literal)
+            except ValueError:
+                pass
+        signed = f"-{literal}" if negative else literal
         try:
-            if '.' in num_str or 'e' in num_str.lower():
-                return float(num_str)
-            else:
-                value = int(num_str)
-                # Use int for values that fit in standard integer range
-                return value
+            return float(signed)
         except ValueError:
-            raise JhonParseError("Could not parse number", self.pos)
+            raise self._syntax_err(f"could not parse number: {signed}")
+
+    def _scan_dec_digits(self) -> str:
+        out: List[str] = []
+        last_under = False
+        has_digit = False
+        while self.pos < self.len:
+            c = self.input[self.pos]
+            if _is_dec_digit(c):
+                out.append(c)
+                last_under = False
+                has_digit = True
+                self._advance()
+            elif c == "_":
+                if not has_digit or last_under:
+                    raise self._syntax_err("invalid underscore placement in number")
+                last_under = True
+                self._advance()
+            else:
+                break
+        if not has_digit:
+            raise self._syntax_err("number requires at least one digit")
+        if last_under:
+            raise self._syntax_err("number cannot end with underscore")
+        return "".join(out)
+
+    def _scan_radix_digits(self, radix: int) -> str:
+        out: List[str] = []
+        last_under = False
+        has_digit = False
+        while self.pos < self.len:
+            c = self.input[self.pos]
+            ok = (
+                _is_hex_digit(c) if radix == 16
+                else ("0" <= c <= "7") if radix == 8
+                else c in ("0", "1")
+            )
+            if ok:
+                out.append(c)
+                last_under = False
+                has_digit = True
+                self._advance()
+            elif c == "_":
+                if not has_digit or last_under:
+                    raise self._syntax_err("invalid underscore placement in number")
+                last_under = True
+                self._advance()
+            else:
+                break
+        if not has_digit:
+            raise self._syntax_err("number requires at least one digit after radix prefix")
+        if last_under:
+            raise self._syntax_err("number cannot end with underscore")
+        return "".join(out)
 
     def _parse_boolean(self) -> bool:
-        """Parse a boolean value."""
-        if (self.pos + 3 < self.length and
-                self.input[self.pos] == 't' and
-                self.input[self.pos + 1] == 'r' and
-                self.input[self.pos + 2] == 'u' and
-                self.input[self.pos + 3] == 'e'):
-            self.pos += 4
+        if self._matches("true"):
+            for _ in range(4):
+                self._advance()
             return True
-        elif (self.pos + 4 < self.length and
-                self.input[self.pos] == 'f' and
-                self.input[self.pos + 1] == 'a' and
-                self.input[self.pos + 2] == 'l' and
-                self.input[self.pos + 3] == 's' and
-                self.input[self.pos + 4] == 'e'):
-            self.pos += 5
+        if self._matches("false"):
+            for _ in range(5):
+                self._advance()
             return False
-
-        raise JhonParseError("Invalid boolean value", self.pos)
+        raise self._syntax_err("invalid boolean value")
 
     def _parse_null(self) -> None:
-        """Parse a null value."""
-        if (self.pos + 3 < self.length and
-                self.input[self.pos] == 'n' and
-                self.input[self.pos + 1] == 'u' and
-                self.input[self.pos + 2] == 'l' and
-                self.input[self.pos + 3] == 'l'):
-            self.pos += 4
+        if self._matches("null"):
+            for _ in range(4):
+                self._advance()
             return None
+        raise self._syntax_err("invalid null value")
 
-        raise JhonParseError("Invalid null value", self.pos)
+    def _matches(self, lit: str) -> bool:
+        if self.pos + len(lit) > self.len:
+            return False
+        return self.input[self.pos:self.pos + len(lit)] == lit
 
-    def _skip_separators(self) -> None:
-        """Skip comma and newline separators."""
-        while self.pos < self.length:
-            c = self.input[self.pos]
-            if c in ('\n', ','):
-                self.pos += 1
-            else:
-                break
-
-    def _peek_separator(self, closing_char: str) -> bool:
-        """Check if there's a separator ahead."""
-        temp_pos = self.pos
-        found_space = False
-
-        while temp_pos < self.length:
-            c = self.input[temp_pos]
-            if c in (' ', '\t'):
-                temp_pos += 1
-                found_space = True
-            elif c in ('\n', ','):
-                return True
-            elif closing_char and c == closing_char:
-                return True
-            elif found_space:
-                return True
-            else:
-                return False
-
-        return found_space or not closing_char
-
-    def _skip_whitespace(self) -> None:
-        """Skip all whitespace."""
-        while self.pos < self.length and self.input[self.pos].isspace():
-            self.pos += 1
-
-    def _skip_spaces_and_tabs(self) -> None:
-        """Skip only spaces and tabs."""
-        while self.pos < self.length:
-            c = self.input[self.pos]
-            if c in (' ', '\t'):
-                self.pos += 1
-            else:
-                break
-
-    @staticmethod
-    def _is_unquoted_key_char(c: str) -> bool:
-        """Check if character is valid in unquoted key."""
-        return c.isalnum() or c in ('_', '-')
-
-
-# =============================================================================
-# Public Parse API
-# =============================================================================
-
-def remove_comments(input: str) -> str:
-    """Remove // and /* */ style comments from input."""
-    result = []
-    i = 0
-    length = len(input)
-
-    while i < length:
-        c = input[i]
-
-        if c == '/' and i + 1 < length:
-            next_char = input[i + 1]
-
-            if next_char == '/':
-                # Single line comment
-                i += 2
-                while i < length and input[i] != '\n':
-                    i += 1
-                continue
-            elif next_char == '*':
-                # Multi-line comment
-                i += 2
-                found_end = False
-                while i < length:
-                    if input[i] == '*' and i + 1 < length and input[i + 1] == '/':
-                        i += 2
-                        found_end = True
-                        break
-                    i += 1
-                if not found_end:
-                    result.append('/*')
-                continue
-
-        result.append(c)
-        i += 1
-
-    return ''.join(result)
-
-
-def parse(input: str) -> Dict[str, Any]:
-    """
-    Parse a JHON config string into a Python dict.
-
-    Args:
-        input: JHON format string
-
-    Returns:
-        Parsed dictionary
-
-    Raises:
-        JhonParseError: If parsing fails
-
-    Examples:
-        >>> parse('name="John" age=30')
-        {'name': 'John', 'age': 30}
-    """
-    input = remove_comments(input).strip()
-
-    if not input:
-        return {}
-
-    parser = Parser(input)
-
-    # Handle top-level objects wrapped in braces
-    if input.startswith('{') and input.endswith('}'):
-        return parser.parse_nested_object()
-
-    return parser.parse_jhon_object()
+    def _parse_array(self) -> List[Any]:
+        self._advance()  # [
+        arr: List[Any] = []
+        self._skip_ws_and_comments()
+        while True:
+            c = self._current()
+            if not c:
+                raise self._syntax_err("unterminated array")
+            if c == "]":
+                self._advance()
+                return arr
+            arr.append(self._parse_value())
+            saw_newline, saw_comma = self._skip_inter_item_separator()
+            if self._current() == "]":
+                self._advance()
+                return arr
+            if self._at_end():
+                raise self._syntax_err("unterminated array")
+            if not saw_newline and not saw_comma:
+                raise self._syntax_err("items on the same line must be separated by a comma")
 
 
 # =============================================================================
 # Serializer
 # =============================================================================
 
+
 class Serializer:
-    def serialize(self, value: Any, pretty: bool = False, indent: str = "  ") -> str:
-        """Serialize a value to JHON format."""
-        if pretty:
-            return self._serialize_pretty(value, indent, 0, False)
-        return self._serialize_compact(value)
+    """Compact and pretty JHON serializers mirroring rust/src/lib.rs."""
 
-    def _serialize_compact(self, value: Any) -> str:
-        """Serialize a value in compact format."""
-        if value is None:
-            return "null"
-        elif isinstance(value, str):
-            return self._serialize_string(value)
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, (int, float)):
-            return self._serialize_number(value)
-        elif isinstance(value, list):
-            return self._serialize_array_compact(value)
-        elif isinstance(value, dict):
-            return self._serialize_object_compact(value)
+    def __init__(self, sort_keys: bool = False) -> None:
+        self.sort_keys = sort_keys
 
-        raise TypeError(f"Cannot serialize value: {type(value)}")
+    # ---- compact ----
 
-    def _serialize_object_compact(self, obj: Dict) -> str:
-        """Serialize an object in compact format."""
-        if not obj:
-            return ""
+    def serialize(self, value: Any) -> str:
+        out: List[str] = []
+        self._serialize_compact(value, out)
+        return "".join(out)
 
-        parts = []
-        for key in sorted(obj.keys()):
-            serialized_key = self._serialize_key(key)
-            value = obj[key]
+    def _serialize_compact(self, v: Any, out: List[str]) -> None:
+        if v is None:
+            out.append("null")
+            return
+        if isinstance(v, bool):
+            out.append("true" if v else "false")
+            return
+        if isinstance(v, str):
+            self._serialize_string(v, out)
+            return
+        if isinstance(v, int):
+            out.append(str(v))
+            return
+        if isinstance(v, float):
+            self._serialize_float(v, out)
+            return
+        if isinstance(v, list):
+            if not v:
+                out.append("[]")
+                return
+            out.append("[")
+            first = True
+            for el in v:
+                if not first:
+                    out.append(",")
+                first = False
+                if isinstance(el, dict) and not el:
+                    out.append("{}")
+                    continue
+                if isinstance(el, dict):
+                    out.append("{")
+                    self._serialize_object_compact(el, out)
+                    out.append("}")
+                    continue
+                self._serialize_compact(el, out)
+            out.append("]")
+            return
+        if isinstance(v, dict):
+            if not v:
+                return
+            self._serialize_object_compact(v, out)
+            return
+        out.append(str(v))
 
-            if isinstance(value, dict):
-                if not value:
-                    serialized_value = "{}"
-                else:
-                    serialized_value = "{" + self._serialize_object_compact(value) + "}"
-            else:
-                serialized_value = self._serialize_compact(value)
-
-            parts.append(f"{serialized_key}={serialized_value}")
-
-        return ",".join(parts)
-
-    def _serialize_array_compact(self, arr: List) -> str:
-        """Serialize an array in compact format."""
-        if not arr:
-            return "[]"
-
-        elements = []
-        for v in arr:
+    def _serialize_object_compact(self, obj: Dict[str, Any], out: List[str]) -> None:
+        first = True
+        for key in self._keys(obj):
+            if not first:
+                out.append(",")
+            first = False
+            self._serialize_key(key, out)
+            out.append("=")
+            v = obj[key]
             if isinstance(v, dict):
                 if not v:
-                    elements.append("{}")
-                else:
-                    elements.append("{" + self._serialize_object_compact(v) + "}")
-            else:
-                elements.append(self._serialize_compact(v))
+                    out.append("{}")
+                    continue
+                out.append("{")
+                self._serialize_object_compact(v, out)
+                out.append("}")
+                continue
+            self._serialize_compact(v, out)
 
-        return "[" + ",".join(elements) + "]"
+    # ---- pretty ----
 
-    def _serialize_key(self, key: str) -> str:
-        """Serialize a key (quotes if necessary)."""
-        if self._needs_quoting(key):
-            return self._serialize_string(key)
-        return key
+    def serialize_pretty(self, value: Any, indent: str = "  ") -> str:
+        out: List[str] = []
+        self._serialize_pretty(value, indent, 0, False, out)
+        return "".join(out)
 
-    def _serialize_string(self, s: str) -> str:
-        """Serialize a string value."""
-        result = ['"']
+    def _serialize_pretty(
+        self, v: Any, indent: str, depth: int, in_array: bool, out: List[str]
+    ) -> None:
+        if v is None:
+            out.append("null")
+            return
+        if isinstance(v, bool):
+            out.append("true" if v else "false")
+            return
+        if isinstance(v, str):
+            self._serialize_string(v, out)
+            return
+        if isinstance(v, int):
+            out.append(str(v))
+            return
+        if isinstance(v, float):
+            self._serialize_float(v, out)
+            return
+        if isinstance(v, list):
+            if not v:
+                out.append("[]")
+                return
+            self._serialize_array_pretty(v, indent, depth, out)
+            return
+        if isinstance(v, dict):
+            if not v:
+                if in_array or depth > 0:
+                    out.append("{}")
+                return
+            self._serialize_object_pretty(v, indent, depth, in_array, out)
+            return
 
-        for c in s:
-            if c == '\\':
-                result.append('\\\\')
-            elif c == '"':
-                result.append('\\"')
-            elif c == '\n':
-                result.append('\\n')
-            elif c == '\r':
-                result.append('\\r')
-            elif c == '\t':
-                result.append('\\t')
-            elif c == '\b':
-                result.append('\\b')
-            elif c == '\f':
-                result.append('\\f')
-            elif c < ' ':
-                result.append(f'\\u{ord(c):04x}')
-            else:
-                result.append(c)
+    def _serialize_object_pretty(
+        self,
+        obj: Dict[str, Any],
+        indent: str,
+        depth: int,
+        in_array: bool,
+        out: List[str],
+    ) -> None:
+        if in_array:
+            out.append(indent * (depth + 1))
+            out.append("{\n")
+        elif depth > 0:
+            out.append("{\n")
 
-        result.append('"')
-        return ''.join(result)
-
-    def _serialize_number(self, n: int | float) -> str:
-        """Serialize a number value."""
-        if isinstance(n, int) or n.is_integer():
-            return str(int(n))
-        return str(n)
-
-    def _serialize_pretty(self, value: Any, indent: str, depth: int, in_array: bool) -> str:
-        """Serialize with pretty formatting."""
-        if value is None:
-            return "null"
-        elif isinstance(value, str):
-            return self._serialize_string(value)
-        elif isinstance(value, bool):
-            return "true" if value else "false"
-        elif isinstance(value, (int, float)):
-            return self._serialize_number(value)
-        elif isinstance(value, list):
-            return self._serialize_array_pretty(value, indent, depth)
-        elif isinstance(value, dict):
-            return self._serialize_object_pretty(value, indent, depth, in_array)
-
-        raise TypeError(f"Cannot serialize value: {type(value)}")
-
-    def _serialize_object_pretty(self, obj: Dict, indent: str, depth: int, in_array: bool) -> str:
-        """Serialize object with pretty formatting."""
-        if not obj:
-            return ""
-
-        parts = []
-        for key in sorted(obj.keys()):
-            serialized_key = self._serialize_key(key)
-            serialized_value = self._serialize_pretty(obj[key], indent, depth + 1, False)
-
-            if in_array:
-                inner_indent = indent * (depth + 2)
-                parts.append(f"{inner_indent}{serialized_key} = {serialized_value}")
-            elif depth == 0:
-                parts.append(f"{serialized_key} = {serialized_value}")
-            else:
-                inner_indent = indent * depth
-                parts.append(f"{inner_indent}{serialized_key} = {serialized_value}")
+        first = True
+        for key in self._keys(obj):
+            if not first:
+                out.append("\n")
+            first = False
+            inner_depth = (depth + 2) if in_array else (0 if depth == 0 else depth)
+            out.append(indent * inner_depth)
+            self._serialize_key(key, out)
+            out.append(" = ")
+            self._serialize_pretty(obj[key], indent, depth + 1, False, out)
 
         if in_array:
-            brace_indent = indent * (depth + 1)
-            return brace_indent + "{\n" + ",\n".join(parts) + "\n" + brace_indent + "}"
-        elif depth == 0:
-            return ",\n".join(parts)
-        else:
-            outer_indent = indent * (depth - 1)
-            return "{\n" + ",\n".join(parts) + "\n" + outer_indent + "}"
+            out.append("\n")
+            out.append(indent * (depth + 1))
+            out.append("}")
+        elif depth > 0:
+            out.append("\n")
+            out.append(indent * (depth - 1))
+            out.append("}")
 
-    def _serialize_array_pretty(self, arr: List, indent: str, depth: int) -> str:
-        """Serialize array with pretty formatting."""
-        if not arr:
-            return "[]"
-
-        outer_indent = indent * (depth - 1) if depth > 0 else ""
-
-        elements = []
+    def _serialize_array_pretty(
+        self, arr: List[Any], indent: str, depth: int, out: List[str]
+    ) -> None:
+        out.append("[\n")
+        first = True
         for v in arr:
+            if not first:
+                out.append("\n")
+            first = False
             if isinstance(v, dict):
-                object_depth = max(0, depth - 1)
-                elements.append(self._serialize_pretty(v, indent, object_depth, True))
+                self._serialize_pretty(v, indent, depth, True, out)
             else:
-                element_indent = indent if depth == 0 else indent * depth
-                serialized = self._serialize_pretty(v, indent, depth + 1, False)
-                elements.append(f"{element_indent}{serialized}")
+                out.append(indent * (depth + 1))
+                self._serialize_pretty(v, indent, depth + 1, False, out)
+        out.append("\n")
+        out.append(indent * depth)
+        out.append("]")
 
-        return "[\n" + ",\n".join(elements) + "\n" + outer_indent + "]"
+    # ---- helpers ----
+
+    def _keys(self, obj: Dict[str, Any]) -> List[str]:
+        keys = list(obj.keys())
+        if self.sort_keys:
+            keys.sort()
+        return keys
+
+    def _serialize_key(self, key: str, out: List[str]) -> None:
+        if _needs_quoting(key):
+            self._serialize_string(key, out)
+            return
+        out.append(key)
 
     @staticmethod
-    def _needs_quoting(s: str) -> bool:
-        """Check if a key needs quoting."""
-        if not s:
-            return True
+    def _serialize_string(s: str, out: List[str]) -> None:
+        out.append('"')
         for c in s:
-            if not (c.isalnum() or c in ('_', '-')):
-                return True
-        return False
+            o = ord(c)
+            if c == "\\":
+                out.append("\\\\")
+            elif c == '"':
+                out.append('\\"')
+            elif c == "\n":
+                out.append("\\n")
+            elif c == "\r":
+                out.append("\\r")
+            elif c == "\t":
+                out.append("\\t")
+            elif c == "\b":
+                out.append("\\b")
+            elif c == "\f":
+                out.append("\\f")
+            elif o < 0x20:
+                out.append(f"\\u{o:04x}")
+            else:
+                out.append(c)
+        out.append('"')
+
+    @staticmethod
+    def _serialize_float(f: float, out: List[str]) -> None:
+        if f == int(f) and -9.2e18 <= f <= 9.2e18:
+            out.append(str(int(f)))
+        else:
+            out.append(repr(f))
+
+
+def _needs_quoting(s: str) -> bool:
+    if not s:
+        return True
+    return any(_is_key_delimiter(c) for c in s)
 
 
 # =============================================================================
-# Public Serialize API
+# Public functions
 # =============================================================================
 
-def serialize(value: Any) -> str:
-    """
-    Serialize a value to compact JHON format.
 
-    Args:
-        value: Python dict, list, or primitive value
-
-    Returns:
-        JHON format string
-
-    Examples:
-        >>> serialize({"name": "John", "age": 30})
-        'age=30,name="John"'
-    """
-    return Serializer().serialize(value, pretty=False)
+def parse(input: str) -> Any:
+    """Parse a JHON document. Returns a dict for objects, list for arrays."""
+    return Parser(input).parse()
 
 
-def serialize_pretty(value: Any, indent: str = "  ") -> str:
-    """
-    Serialize a value to pretty-printed JHON format.
+def serialize(value: Any, *, sort_keys: bool = False) -> str:
+    """Serialize a value to compact JHON."""
+    return Serializer(sort_keys=sort_keys).serialize(value)
 
-    Args:
-        value: Python dict, list, or primitive value
-        indent: Indentation string (default: "  ")
 
-    Returns:
-        Pretty-printed JHON format string
+def serialize_pretty(value: Any, indent: str = "  ", *, sort_keys: bool = False) -> str:
+    """Serialize a value to pretty-printed JHON (multi-line, no commas)."""
+    return Serializer(sort_keys=sort_keys).serialize_pretty(value, indent=indent)
 
-    Examples:
-        >>> serialize_pretty({"name": "John", "age": 30})
-        'age = 30,\\nname = "John"'
-    """
-    return Serializer().serialize(value, pretty=True, indent=indent)
+
+# Legacy alias kept for backward compatibility with v1.x callers. The new
+# parser strips comments inline, so this returns the input unchanged.
+def remove_comments(input: str) -> str:
+    """Deprecated. The v2 parser strips comments inline; this is a no-op."""
+    return input

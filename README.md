@@ -173,7 +173,7 @@ serde = { version = "1", features = ["derive"] }
 
 ## Performance
 
-Benchmark results across multiple implementations (nanoseconds per operation). All numbers were re-measured fresh on the same Apple M5 machine for cross-language comparability after the v2.0 rewrites of the TypeScript, Go, and Java implementations.
+Benchmark results across multiple implementations (nanoseconds per operation). All numbers were re-measured fresh on the same Apple M5 machine for cross-language comparability after the v2.0 rewrites of the TypeScript, Go, Java, and Python implementations.
 
 ### Parse Performance
 
@@ -182,7 +182,7 @@ Benchmark results across multiple implementations (nanoseconds per operation). A
 | **Rust** | 391 ns | 1,601 ns | 1.21x slower | 1.23x slower |
 | **Go** | 291 ns | 1,385 ns | **2.13x faster** | **1.66x faster** |
 | **Java** | 138 ns | 1,014 ns | **3.15x faster** | **1.07x faster** |
-| **Python** | 4,488 ns | 25,565 ns | 7.98x slower | 21.02x slower |
+| **Python** | 7,520 ns | 38,948 ns | 14.60x slower | 30.65x slower |
 | **TypeScript** | 870 ns | 4,050 ns | 9.67x slower | 9.31x slower |
 
 ### Serialize Performance
@@ -192,23 +192,22 @@ Benchmark results across multiple implementations (nanoseconds per operation). A
 | **Rust** | 136 ns | 348 ns | 2.27x slower | 1.22x slower |
 | **Go** | 195 ns | 807 ns | **1.83x faster** | **1.93x faster** |
 | **Java** | 115 ns | 386 ns | **11.97x faster** | **6.34x faster** |
-| **Python** | 1,248 ns | 8,818 ns | 1.51x slower | 5.77x slower |
+| **Python** | 2,377 ns | 11,986 ns | 3.80x slower | 9.41x slower |
 | **TypeScript** | 335 ns | 1,560 ns | 4.79x slower | 6.78x slower |
 
 ### Key Takeaways
 
-- **Java** implementation is now faster than Gson on both parse and serialize — the v2.0 rewrite cut serialize times ~5x
+- **Java** is now faster than Gson on both parse and serialize — the v2.0 rewrite cut serialize times ~5x
 - **Go** is consistently 1.6–2.1x faster than `encoding/json` on both operations
 - **Rust** remains within 1.2–2.3x of `serde_json` (itself highly optimized)
-- **Python** trades performance for developer convenience
+- **Python** v2.0 is slower than v1.x because it now tracks 1-based line/column on every character for error diagnostics (v1.x only tracked byte offset). Absolute numbers are still sub-millisecond for typical config files
 - **TypeScript** is within an order of magnitude of native JSON (`JSON.parse` is itself highly optimized C++); the v2.0 rewrite dropped absolute parse times ~30x versus v1.x
 
 **Benchmark Details:**
 - Small: `name="John Doe",age=30,active=true,score=95.5`
 - Medium: Nested objects with arrays (server/database/pool/features), ~300 characters — see `rust/benches/benchmark.rs`
-- Hardware: Apple M5 (CPU-detected as Apple M5 for Rust criterion; JMH fork=1 wi=2 i=3 for Java; `go test -bench=.` for Go; `bun run benchmark` for TypeScript)
+- Hardware: Apple M5 (criterion for Rust; JMH fork=1 wi=2 i=3 for Java; `go test -bench=.` for Go; `bun run benchmark` for TypeScript; `uv run python benchmark_jhon.py` for Python)
 - JSON libraries: `serde_json` (Rust), `encoding/json` (Go), Gson (Java), stdlib (Python), native (TypeScript)
-- Python numbers are from an earlier hardware run and were not re-measured for this update
 
 JHON trades some raw performance in certain implementations for developer-friendly features (comments, raw strings, flexible syntax). For configuration files (typically <10KB), this performance difference is negligible.
 

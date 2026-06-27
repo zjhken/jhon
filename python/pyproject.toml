@@ -1,6 +1,6 @@
 [project]
 name = "jhon"
-version = "1.0.0"
+version = "2.0.0"
 description = "JHON - JinHui's Object Notation: A configuration language parser and serializer"
 readme = "README.md"
 authors = [
@@ -21,5 +21,6 @@ dev-dependencies = ["pytest>=7.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["."]
+python_files = ["tests_jhon.py"]
 pythonpath = ["."]
 addopts = "-v"
