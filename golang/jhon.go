@@ -1,74 +1,252 @@
 // Package jhon implements a parser and serializer for JHON (JinHui's Object Notation).
-// JHON is a human-readable configuration format as an alternative to JSON.
+//
+// The implementation mirrors rust/src/lib.rs. Behavior parity is verified by
+// porting Rust's test suite (see jhon_test.go). The parser is hand-written
+// recursive descent over a byte slice, tracking line and column for errors.
 package jhon
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 )
 
-// =============================================================================
-// Types
-// =============================================================================
+// ============================================================================
+// Public types
+// ============================================================================
 
-// Value represents any JHON value (object, array, string, number, boolean, null)
+// Value represents any JHON value (object, array, string, number, boolean, null).
 type Value interface{}
 
-// Object represents a JHON object (map of string keys to Values)
+// Object represents a JHON object — a map of string keys to Values. Key
+// insertion order is preserved by parse; serialize emits keys in
+// Object.keys() order (Go map iteration is random, so callers that want a
+// stable order should sort first or use the sortKeys serialize option).
 type Object map[string]Value
 
-// Array represents a JHON array (slice of Values)
+// Array represents a JHON array.
 type Array []Value
 
-// ParseError represents an error that occurred during parsing
+// ParseErrorKind classifies a parse error.
+type ParseErrorKind int
+
+const (
+	ParseErrorSyntax ParseErrorKind = iota
+	ParseErrorEOF
+	ParseErrorDuplicateKey
+)
+
+// ParseError is returned by Parse on invalid input. It carries 1-based line
+// and column for diagnostic placement.
 type ParseError struct {
-	Message  string
+	Kind     ParseErrorKind
+	Line     int
+	Column   int
+	EndLine  int
+	EndColumn int
 	Position int
+	Message  string
+	Key      string // populated when Kind == ParseErrorDuplicateKey
 }
 
 func (e *ParseError) Error() string {
-	if e.Position >= 0 {
-		return fmt.Sprintf("parse error at position %d: %s", e.Position, e.Message)
+	switch e.Kind {
+	case ParseErrorEOF:
+		return fmt.Sprintf("unexpected end of input at %d:%d: %s", e.Line, e.Column, e.Message)
+	case ParseErrorDuplicateKey:
+		return fmt.Sprintf("duplicate key at %d:%d: %q", e.Line, e.Column, e.Key)
+	default:
+		return fmt.Sprintf("parse error at %d:%d: %s", e.Line, e.Column, e.Message)
 	}
-	return fmt.Sprintf("parse error: %s", e.Message)
 }
 
-// =============================================================================
+// SerializeOptions controls compact and pretty serializer output.
+type SerializeOptions struct {
+	// SortKeys emits object keys in lexicographic order. Default false — per
+	// SPEC §5.4, insertion order is preserved.
+	SortKeys bool
+	// Indent is the indent string used per depth level in pretty mode.
+	// Defaults to "  " (two spaces) when empty.
+	Indent string
+}
+
+// ============================================================================
 // Parser
-// =============================================================================
+// ============================================================================
 
-// parser represents the JHON parser state
 type parser struct {
-	input string
+	input []byte
 	pos   int
-	len   int
+	line  int
+	col   int
 }
 
-// Parse parses a JHON config string into a generic Value
-func Parse(input string) (Value, error) {
-	input = removeComments(input)
-	input = strings.TrimSpace(input)
+func newParser(input []byte) *parser {
+	return &parser{input: input, pos: 0, line: 1, col: 1}
+}
 
-	if input == "" {
+func (p *parser) current() (byte, bool) {
+	if p.pos >= len(p.input) {
+		return 0, false
+	}
+	return p.input[p.pos], true
+}
+
+func (p *parser) peek(offset int) (byte, bool) {
+	idx := p.pos + offset
+	if idx < 0 || idx >= len(p.input) {
+		return 0, false
+	}
+	return p.input[idx], true
+}
+
+func (p *parser) advance() (byte, bool) {
+	b, ok := p.current()
+	if !ok {
+		return 0, false
+	}
+	if b == '\n' {
+		p.line++
+		p.col = 1
+	} else {
+		p.col++
+	}
+	p.pos++
+	return b, true
+}
+
+// syntaxErr builds a ParseError at the current position.
+func (p *parser) syntaxErr(msg string) *ParseError {
+	kind := ParseErrorSyntax
+	if p.pos >= len(p.input) {
+		kind = ParseErrorEOF
+	}
+	return &ParseError{
+		Kind:     kind,
+		Line:     p.line,
+		Column:   p.col,
+		EndLine:  p.line,
+		EndColumn: p.col + 1,
+		Position: p.pos,
+		Message:  msg,
+	}
+}
+
+// skipWsAndComments consumes whitespace and comments. Returns whether a
+// newline was seen.
+func (p *parser) skipWsAndComments() bool {
+	sawNewline := false
+	for {
+		c, ok := p.current()
+		if !ok {
+			return sawNewline
+		}
+		switch c {
+		case ' ', '\t', '\r':
+			p.advance()
+		case '\n':
+			sawNewline = true
+			p.advance()
+		case '/':
+			next, ok := p.peek(1)
+			if !ok {
+				return sawNewline
+			}
+			if next == '/' {
+				// Line comment — consume up to (not including) the newline so
+				// the outer loop records the newline.
+				p.advance()
+				p.advance()
+				for {
+					c, ok := p.current()
+					if !ok || c == '\n' {
+						break
+					}
+					p.advance()
+				}
+			} else if next == '*' {
+				// Block comment — consume through the closing */.
+				start := p.line
+				startCol := p.col
+				p.advance()
+				p.advance()
+				closed := false
+				for {
+					c, ok := p.current()
+					if !ok {
+						break
+					}
+					if c == '*' {
+						if n, ok := p.peek(1); ok && n == '/' {
+							p.advance()
+							p.advance()
+							closed = true
+							break
+						}
+					}
+					if c == '\n' {
+						sawNewline = true
+					}
+					p.advance()
+				}
+				if !closed {
+					return sawNewline
+					_ = start
+					_ = startCol
+				}
+			} else {
+				return sawNewline
+			}
+		default:
+			return sawNewline
+		}
+	}
+}
+
+// skipInterItemSeparator skips the separator between two consecutive items.
+// Returns (sawNewline, sawComma). Per SPEC §5.3, same-line items need a comma.
+func (p *parser) skipInterItemSeparator() (sawNewline, sawComma bool) {
+	sawNewline = p.skipWsAndComments()
+	if c, ok := p.current(); ok && c == ',' {
+		sawComma = true
+		p.advance()
+		if p.skipWsAndComments() {
+			sawNewline = true
+		}
+	}
+	return
+}
+
+// Parse parses a JHON document into a Value.
+func Parse(input string) (Value, error) {
+	p := newParser([]byte(input))
+	p.skipWsAndComments()
+	if p.pos >= len(p.input) {
 		return Object{}, nil
 	}
 
-	p := &parser{input: input, pos: 0, len: len(input)}
-
-	// Handle top-level objects wrapped in braces (from serialize)
-	if strings.HasPrefix(input, "{") && strings.HasSuffix(input, "}") {
+	first, _ := p.current()
+	switch first {
+	case '{':
 		return p.parseNestedObject()
+	case '[':
+		v, err := p.parseArray()
+		if err != nil {
+			return nil, err
+		}
+		// A top-level array must consume the entire document.
+		p.skipWsAndComments()
+		if p.pos < len(p.input) {
+			return nil, p.syntaxErr("unexpected content after top-level array")
+		}
+		return v, nil
 	}
-
 	return p.parseJhonObject()
 }
 
-// MustParse parses a JHON config string and panics on error
+// MustParse parses a JHON config string and panics on error.
 func MustParse(input string) Value {
 	v, err := Parse(input)
 	if err != nil {
@@ -77,965 +255,888 @@ func MustParse(input string) Value {
 	return v
 }
 
-// ParseJSON parses a JHON config string into a JSON-compatible value
-// The result can be marshaled to JSON using encoding/json
+// ParseJSON parses a JHON config string into a JSON-compatible value.
 func ParseJSON(input string) (interface{}, error) {
 	return Parse(input)
 }
 
-// removeComments removes // and /* */ style comments from input
-func removeComments(input string) string {
-	var result strings.Builder
-	i := 0
-	lenInput := len(input)
-
-	for i < lenInput {
-		c := input[i]
-
-		if c == '/' && i+1 < lenInput {
-			nextChar := input[i+1]
-
-			if nextChar == '/' {
-				// Single line comment: consume until newline
-				i += 2
-				for i < lenInput && input[i] != '\n' {
-					i++
-				}
-				continue
-			} else if nextChar == '*' {
-				// Multi-line comment: consume until */
-				i += 2
-				foundEnd := false
-				for i < lenInput {
-					if input[i] == '*' && i+1 < lenInput && input[i+1] == '/' {
-						i += 2
-						foundEnd = true
-						break
-					}
-					i++
-				}
-				if !foundEnd {
-					// Unterminated multi-line comment, treat as literal
-					result.WriteString("/*")
-				}
-				continue
-			}
-		}
-
-		result.WriteByte(c)
-		i++
-	}
-
-	return result.String()
-}
-
-// skipSeparators skips commas and newlines
-func (p *parser) skipSeparators() {
-	for p.pos < p.len {
-		c := p.input[p.pos]
-		if c == '\n' || c == ',' {
-			p.pos++
-		} else {
-			break
-		}
-	}
-}
-
-// peekSeparator checks if there's a separator (comma, newline, or spaces) ahead
-func (p *parser) peekSeparator(closingChar byte) bool {
-	tempPos := p.pos
-	foundSpace := false
-	for tempPos < p.len {
-		c := p.input[tempPos]
-		if c == ' ' || c == '\t' {
-			tempPos++
-			foundSpace = true
-		} else if c == '\n' || c == ',' {
-			return true
-		} else if c == closingChar && closingChar != 0 {
-			return true
-		} else if foundSpace {
-			// Found spaces before a non-separator character, spaces count as separator
-			return true
-		} else {
-			return false
-		}
-	}
-	return foundSpace || closingChar == 0
-}
-
-// skipWhitespace skips all whitespace characters
-func (p *parser) skipWhitespace() {
-	for p.pos < p.len && isWhitespace(p.input[p.pos]) {
-		p.pos++
-	}
-}
-
-// skipSpacesAndTabs skips only spaces and tabs (not newlines)
-func (p *parser) skipSpacesAndTabs() {
-	for p.pos < p.len {
-		c := p.input[p.pos]
-		if c == ' ' || c == '\t' {
-			p.pos++
-		} else {
-			break
-		}
-	}
-}
-
-// parseJhonObject parses a top-level JHON object
+// parseJhonObject parses a bare top-level object (no surrounding braces).
 func (p *parser) parseJhonObject() (Value, error) {
-	obj := make(Object)
-	isFirst := true
-
-	for p.pos < p.len {
-		if !isFirst {
-			if !p.peekSeparator(0) {
-				return nil, &ParseError{Message: "expected comma or newline between properties", Position: p.pos}
-			}
-			p.skipSeparators()
-		}
-
-		p.skipSpacesAndTabs()
-
-		if p.pos >= p.len {
-			break
-		}
-
-		key, err := p.parseKey()
+	obj := Object{}
+	p.skipWsAndComments()
+	for p.pos < len(p.input) {
+		key, val, err := p.parseProperty(obj)
 		if err != nil {
 			return nil, err
 		}
-
-		p.skipWhitespace()
-
-		if p.pos >= p.len || p.input[p.pos] != '=' {
-			return nil, &ParseError{Message: "expected '=' after key", Position: p.pos}
+		obj[key] = val
+		sawNewline, sawComma := p.skipInterItemSeparator()
+		if p.pos >= len(p.input) {
+			break // trailing separator at EOF is fine
 		}
-		p.pos++
-
-		p.skipWhitespace()
-
-		value, err := p.parseValue()
-		if err != nil {
-			return nil, err
+		if !sawNewline && !sawComma {
+			return nil, p.syntaxErr("items on the same line must be separated by a comma")
 		}
-
-		obj[key] = value
-		isFirst = false
 	}
-
 	return obj, nil
 }
 
-// parseNestedObject parses a nested JHON object {key=value, ...}
+// parseNestedObject parses a braced object: { k=v, ... }.
 func (p *parser) parseNestedObject() (Value, error) {
-	if p.pos >= p.len || p.input[p.pos] != '{' {
-		return nil, &ParseError{Message: "expected '{'", Position: p.pos}
-	}
-	p.pos++
-
-	obj := make(Object)
-	isFirst := true
-
-	for p.pos < p.len {
-		if !isFirst {
-			if !p.peekSeparator('}') {
-				return nil, &ParseError{Message: "expected comma or newline between object properties", Position: p.pos}
-			}
-			p.skipSeparators()
+	p.advance() // {
+	obj := Object{}
+	p.skipWsAndComments()
+	for {
+		c, ok := p.current()
+		if !ok {
+			return nil, p.syntaxErr("unterminated nested object")
 		}
-
-		p.skipSpacesAndTabs()
-
-		if p.pos >= p.len {
-			return nil, &ParseError{Message: "unterminated nested object", Position: p.pos}
-		}
-
-		if p.input[p.pos] == '}' {
-			p.pos++
+		if c == '}' {
+			p.advance()
 			return obj, nil
 		}
-
-		key, err := p.parseKey()
+		key, val, err := p.parseProperty(obj)
 		if err != nil {
 			return nil, err
 		}
-
-		p.skipWhitespace()
-
-		if p.pos >= p.len || p.input[p.pos] != '=' {
-			return nil, &ParseError{Message: "expected '=' after key in nested object", Position: p.pos}
+		obj[key] = val
+		sawNewline, sawComma := p.skipInterItemSeparator()
+		if c, ok := p.current(); ok && c == '}' {
+			p.advance()
+			return obj, nil
 		}
-		p.pos++
-
-		p.skipWhitespace()
-
-		value, err := p.parseValue()
-		if err != nil {
-			return nil, err
+		if !ok {
+			return nil, p.syntaxErr("unterminated nested object")
 		}
-
-		obj[key] = value
-		isFirst = false
+		if !sawNewline && !sawComma {
+			return nil, p.syntaxErr("items on the same line must be separated by a comma")
+		}
 	}
-
-	return nil, &ParseError{Message: "unterminated nested object", Position: p.pos}
 }
 
-// parseKey parses a JHON key (quoted or unquoted)
+// parseProperty parses one k=v pair and validates duplicate keys.
+func (p *parser) parseProperty(seen Object) (string, Value, error) {
+	key, err := p.parseKey()
+	if err != nil {
+		return "", nil, err
+	}
+	p.skipWsAndComments()
+	if c, ok := p.current(); !ok || c != '=' {
+		return "", nil, p.syntaxErr("expected '=' after key")
+	}
+	p.advance()
+	p.skipWsAndComments()
+	val, err := p.parseValue()
+	if err != nil {
+		return "", nil, err
+	}
+	if _, exists := seen[key]; exists {
+		return "", nil, &ParseError{
+			Kind:     ParseErrorDuplicateKey,
+			Line:     p.line,
+			Column:   p.col,
+			EndLine:  p.line,
+			EndColumn: p.col + 1,
+			Position: p.pos,
+			Message:  fmt.Sprintf("duplicate key %q", key),
+			Key:      key,
+		}
+	}
+	return key, val, nil
+}
+
+// parseKey parses a bare or quoted key.
 func (p *parser) parseKey() (string, error) {
-	p.skipWhitespace()
-
-	if p.pos >= p.len {
-		return "", &ParseError{Message: "expected key", Position: p.pos}
+	p.skipWsAndComments()
+	c, ok := p.current()
+	if !ok {
+		return "", p.syntaxErr("expected key")
 	}
-
-	c := p.input[p.pos]
-
 	if c == '"' || c == '\'' {
-		// Quoted key
-		quoteChar := c
-		p.pos++
-
-		var result strings.Builder
-		for p.pos < p.len {
-			if p.input[p.pos] == quoteChar {
-				p.pos++
-				return result.String(), nil
-			} else if p.input[p.pos] == '\\' {
-				p.pos++
-				if p.pos < p.len {
-					char, err := p.parseEscapeSequence(quoteChar)
-					if err != nil {
-						return "", err
-					}
-					result.WriteRune(char)
-				}
-			} else {
-				result.WriteByte(p.input[p.pos])
-				p.pos++
-			}
-		}
-		return "", &ParseError{Message: "unterminated string in key", Position: p.pos}
+		return p.parseString(c)
 	}
-
-	// Unquoted key
+	// Bare key — scan bytes until a delimiter per SPEC §3.3.
 	start := p.pos
-	for p.pos < p.len && isUnquotedKeyChar(p.input[p.pos]) {
-		p.pos++
+	for p.pos < len(p.input) {
+		if isKeyDelimiter(p.input[p.pos]) {
+			break
+		}
+		p.advance()
 	}
-
-	key := p.input[start:p.pos]
-	if key == "" {
-		return "", &ParseError{Message: "empty key", Position: p.pos}
+	if p.pos == start {
+		return "", p.syntaxErr("empty key")
 	}
-
-	return key, nil
+	return string(p.input[start:p.pos]), nil
 }
 
-// parseValue parses a JHON value
+// parseValue dispatches on the first byte.
 func (p *parser) parseValue() (Value, error) {
-	p.skipWhitespace()
-
-	if p.pos >= p.len {
-		return nil, &ParseError{Message: "expected value", Position: p.pos}
+	p.skipWsAndComments()
+	c, ok := p.current()
+	if !ok {
+		return nil, p.syntaxErr("expected value")
 	}
-
-	c := p.input[p.pos]
-
-	if c == '"' || c == '\'' {
-		return p.parseStringValue()
-	} else if c == 'r' || c == 'R' {
-		return p.parseRawStringValue()
-	} else if c == '[' {
+	switch c {
+	case '"', '\'':
+		return p.parseString(c)
+	case 'r', 'R':
+		next, ok := p.peek(1)
+		if ok && (next == '"' || next == '#') {
+			return p.parseRawString()
+		}
+		return nil, p.syntaxErr(fmt.Sprintf("unexpected character in value: %c", c))
+	case '[':
 		return p.parseArray()
-	} else if c == '{' {
+	case '{':
 		return p.parseNestedObject()
-	} else if unicode.IsDigit(rune(c)) || c == '-' {
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		return p.parseNumber()
-	} else if c == 't' || c == 'f' {
+	case 't', 'f':
 		return p.parseBoolean()
-	} else if c == 'n' {
+	case 'n':
 		return p.parseNull()
 	}
-
-	return nil, &ParseError{Message: fmt.Sprintf("unexpected character in value: %c", c), Position: p.pos}
+	return nil, p.syntaxErr(fmt.Sprintf("unexpected character in value: %c", c))
 }
 
-// parseStringValue parses a quoted string value
-func (p *parser) parseStringValue() (string, error) {
-	quoteChar := p.input[p.pos]
-	p.pos++
-
-	var result strings.Builder
-	for p.pos < p.len {
-		if p.input[p.pos] == quoteChar {
-			p.pos++
-			return result.String(), nil
-		} else if p.input[p.pos] == '\\' {
-			p.pos++
-			if p.pos < p.len {
-				char, err := p.parseEscapeSequence(quoteChar)
+// parseString parses a double- or single-quoted string. Rejects literal
+// control chars and unknown escapes per SPEC §3.4.
+func (p *parser) parseString(quote byte) (string, error) {
+	quoteChar := quote
+	p.advance() // opening quote
+	var sb strings.Builder
+	for {
+		c, ok := p.current()
+		if !ok {
+			return "", p.syntaxErr("unterminated string")
+		}
+		if c < 0x20 || c == 0x7f {
+			return "", p.syntaxErr(fmt.Sprintf("literal control character 0x%02X in string; use an escape or a raw string", c))
+		}
+		if c == quoteChar {
+			p.advance()
+			return sb.String(), nil
+		}
+		if c == '\\' {
+			p.advance()
+			esc, ok := p.current()
+			if !ok {
+				return "", p.syntaxErr("incomplete escape sequence")
+			}
+			p.advance()
+			switch esc {
+			case 'n':
+				sb.WriteByte('\n')
+			case 'r':
+				sb.WriteByte('\r')
+			case 't':
+				sb.WriteByte('\t')
+			case 'b':
+				sb.WriteByte(0x08)
+			case 'f':
+				sb.WriteByte(0x0c)
+			case '\\':
+				sb.WriteByte('\\')
+			case '"':
+				sb.WriteByte('"')
+			case '\'':
+				sb.WriteByte('\'')
+			case '/':
+				sb.WriteByte('/')
+			case 'x':
+				v, err := p.parseHexDigits(2, "\\x")
 				if err != nil {
 					return "", err
 				}
-				result.WriteRune(char)
+				sb.WriteByte(byte(v))
+			case 'u':
+				v, err := p.parseHexDigits(4, "\\u")
+				if err != nil {
+					return "", err
+				}
+				if v >= 0xd800 && v <= 0xdfff {
+					return "", p.syntaxErr(fmt.Sprintf("surrogate code point U+%04X requires a pair; surrogate handling is not yet implemented", v))
+				}
+				sb.WriteRune(rune(v))
+			default:
+				return "", p.syntaxErr(fmt.Sprintf("unknown escape \\%c", esc))
 			}
-		} else {
-			result.WriteByte(p.input[p.pos])
-			p.pos++
+			continue
 		}
+		sb.WriteByte(c)
+		p.advance()
 	}
-
-	return "", &ParseError{Message: "unterminated string", Position: p.pos}
 }
 
-// parseRawStringValue parses a raw string value (r"..." or r#"..."#)
-func (p *parser) parseRawStringValue() (string, error) {
-	if p.pos >= p.len || (p.input[p.pos] != 'r' && p.input[p.pos] != 'R') {
-		return "", &ParseError{Message: "expected raw string", Position: p.pos}
+func (p *parser) parseHexDigits(count int, label string) (uint32, error) {
+	var v uint32
+	for i := 0; i < count; i++ {
+		c, ok := p.current()
+		if !ok {
+			return 0, p.syntaxErr(fmt.Sprintf("incomplete %s escape", label))
+		}
+		d, ok := hexDigit(c)
+		if !ok {
+			return 0, p.syntaxErr(fmt.Sprintf("invalid hex digit in %s escape", label))
+		}
+		v = (v << 4) | d
+		p.advance()
 	}
-	p.pos++
+	return v, nil
+}
 
-	if p.pos >= p.len {
-		return "", &ParseError{Message: "unexpected end of input in raw string", Position: p.pos}
-	}
-
-	// Count the number of # symbols
+// parseRawString parses r"...", R"...", with optional # delimiters.
+func (p *parser) parseRawString() (string, error) {
+	p.advance() // 'r' or 'R'
 	hashCount := 0
-	for p.pos < p.len && p.input[p.pos] == '#' {
+	for {
+		c, ok := p.current()
+		if !ok || c != '#' {
+			break
+		}
 		hashCount++
-		p.pos++
+		p.advance()
 	}
-
-	if p.pos >= p.len || p.input[p.pos] != '"' {
-		return "", &ParseError{Message: "expected opening quote after r and # symbols in raw string", Position: p.pos}
+	c, ok := p.current()
+	if !ok || c != '"' {
+		return "", p.syntaxErr("expected opening quote after r and # symbols in raw string")
 	}
-	p.pos++
-
+	p.advance()
 	start := p.pos
+	closing := []byte{'"'}
+	for i := 0; i < hashCount; i++ {
+		closing = append(closing, '#')
+	}
+	idx := bytesIndex(p.input[start:], closing)
+	if idx < 0 {
+		// Move to end for the error position.
+		for p.pos < len(p.input) {
+			p.advance()
+		}
+		return "", p.syntaxErr(fmt.Sprintf("unterminated raw string (expected closing %q)", string(closing)))
+	}
+	idx += start
+	value := string(p.input[start:idx])
+	// Advance through closing pattern, keeping line/col correct.
+	target := idx + len(closing)
+	for p.pos < target {
+		p.advance()
+	}
+	return value, nil
+}
 
-	// Look for the closing sequence: " followed by hashCount # symbols
-	for p.pos < p.len {
-		if p.input[p.pos] == '"' {
-			if p.pos+hashCount < p.len {
-				isClosing := true
-				for j := 1; j <= hashCount; j++ {
-					if p.input[p.pos+j] != '#' {
-						isClosing = false
-						break
-					}
-				}
-
-				if isClosing {
-					content := p.input[start:p.pos]
-					p.pos += hashCount + 1
-					return content, nil
-				}
+func bytesIndex(haystack, needle []byte) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
 			}
 		}
-
-		p.pos++
+		if match {
+			return i
+		}
 	}
-
-	return "", &ParseError{Message: fmt.Sprintf("unterminated raw string (expected closing: \"%s\")", strings.Repeat("#", hashCount)+"\""), Position: p.pos}
+	return -1
 }
 
-// parseEscapeSequence parses an escape sequence
-func (p *parser) parseEscapeSequence(quoteChar byte) (rune, error) {
-	if p.pos >= p.len {
-		return 0, &ParseError{Message: "incomplete escape sequence", Position: p.pos}
-	}
-
-	c := p.input[p.pos]
-	p.pos++
-
-	switch c {
-	case 'n':
-		return '\n', nil
-	case 'r':
-		return '\r', nil
-	case 't':
-		return '\t', nil
-	case 'b':
-		return '\b', nil
-	case 'f':
-		return '\f', nil
-	case '\\':
-		return '\\', nil
-	case '"', '\'':
-		return rune(c), nil
-	case 'u':
-		// Unicode escape sequence
-		if p.pos+3 >= p.len {
-			return 0, &ParseError{Message: "incomplete Unicode escape sequence", Position: p.pos}
-		}
-		hexStr := p.input[p.pos : p.pos+4]
-		p.pos += 4
-		codePoint, err := strconv.ParseUint(hexStr, 16, 16)
-		if err != nil {
-			return 0, &ParseError{Message: "invalid Unicode escape sequence", Position: p.pos - 4}
-		}
-		return rune(codePoint), nil
-	default:
-		// Unknown escape, return as literal
-		return rune(c), nil
-	}
-}
-
-// parseNumber parses a number value
+// parseNumber parses integers, floats, hex/octal/binary literals with
+// underscores, exponents, and a leading minus — per SPEC §3.5.
 func (p *parser) parseNumber() (Value, error) {
-	start := p.pos
-
-	// Optional minus sign
-	if p.pos < p.len && p.input[p.pos] == '-' {
-		p.pos++
+	negative := false
+	if c, ok := p.current(); ok && c == '-' {
+		negative = true
+		p.advance()
 	}
-
-	// Digits before decimal point (underscores allowed)
-	hasDigits := false
-	for p.pos < p.len && (unicode.IsDigit(rune(p.input[p.pos])) || p.input[p.pos] == '_') {
-		if p.input[p.pos] != '_' {
-			hasDigits = true
-		}
-		p.pos++
-	}
-
-	if !hasDigits {
-		return nil, &ParseError{Message: "invalid number", Position: p.pos}
-	}
-
-	// Optional decimal part
-	if p.pos < p.len && p.input[p.pos] == '.' {
-		p.pos++
-		hasDecimalDigits := false
-		for p.pos < p.len && (unicode.IsDigit(rune(p.input[p.pos])) || p.input[p.pos] == '_') {
-			if p.input[p.pos] != '_' {
-				hasDecimalDigits = true
+	// Radix detection. Lowercase prefixes only.
+	var radix int
+	if c, ok := p.current(); ok && c == '0' {
+		next, ok := p.peek(1)
+		if !ok {
+			// Just '0' — fall through to decimal.
+		} else {
+			switch next {
+			case 'x':
+				radix = 16
+			case 'o':
+				radix = 8
+			case 'b':
+				radix = 2
+			case 'X', 'O', 'B':
+				return nil, p.syntaxErr(fmt.Sprintf("uppercase radix prefix 0%c not allowed; use lowercase", next))
 			}
-			p.pos++
-		}
-		if !hasDecimalDigits {
-			return nil, &ParseError{Message: "invalid decimal number", Position: p.pos}
 		}
 	}
 
-	// Build number string without underscores
-	numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
+	var literal string
+	isFloat := false
 
-	// Try parsing as float
-	num, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return nil, &ParseError{Message: "could not parse number", Position: p.pos}
-	}
-
-	return num, nil
-}
-
-// parseBoolean parses a boolean value
-func (p *parser) parseBoolean() (Value, error) {
-	if p.pos+3 < p.len &&
-		p.input[p.pos] == 't' &&
-		p.input[p.pos+1] == 'r' &&
-		p.input[p.pos+2] == 'u' &&
-		p.input[p.pos+3] == 'e' {
-		p.pos += 4
-		return true, nil
-	} else if p.pos+4 < p.len &&
-		p.input[p.pos] == 'f' &&
-		p.input[p.pos+1] == 'a' &&
-		p.input[p.pos+2] == 'l' &&
-		p.input[p.pos+3] == 's' &&
-		p.input[p.pos+4] == 'e' {
-		p.pos += 5
-		return false, nil
-	}
-
-	return nil, &ParseError{Message: "invalid boolean value", Position: p.pos}
-}
-
-// parseNull parses a null value
-func (p *parser) parseNull() (Value, error) {
-	if p.pos+3 < p.len &&
-		p.input[p.pos] == 'n' &&
-		p.input[p.pos+1] == 'u' &&
-		p.input[p.pos+2] == 'l' &&
-		p.input[p.pos+3] == 'l' {
-		p.pos += 4
-		return nil, nil
-	}
-
-	return nil, &ParseError{Message: "invalid null value", Position: p.pos}
-}
-
-// parseArray parses an array value
-func (p *parser) parseArray() (Value, error) {
-	if p.pos >= p.len || p.input[p.pos] != '[' {
-		return nil, &ParseError{Message: "expected '['", Position: p.pos}
-	}
-	p.pos++
-
-	elements := make(Array, 0)
-	isFirst := true
-
-	for p.pos < p.len {
-		if !isFirst {
-			if !p.peekSeparator(']') {
-				return nil, &ParseError{Message: "expected comma or newline between array elements", Position: p.pos}
-			}
-			p.skipSeparators()
-		}
-
-		p.skipSpacesAndTabs()
-
-		if p.pos >= p.len {
-			return nil, &ParseError{Message: "unterminated array", Position: p.pos}
-		}
-
-		if p.input[p.pos] == ']' {
-			p.pos++
-			return elements, nil
-		}
-
-		element, err := p.parseValue()
+	if radix != 0 {
+		p.advance() // 0
+		p.advance() // x/o/b
+		digits, err := p.scanRadixDigits(radix)
 		if err != nil {
 			return nil, err
 		}
-
-		elements = append(elements, element)
-		isFirst = false
+		literal = digits
+	} else {
+		intPart, err := p.scanDecDigits()
+		if err != nil {
+			return nil, err
+		}
+		literal = intPart
+		if c, ok := p.current(); ok && c == '.' {
+			isFloat = true
+			p.advance()
+			frac, err := p.scanDecDigits()
+			if err != nil {
+				return nil, err
+			}
+			literal = literal + "." + frac
+		}
+		if c, ok := p.current(); ok && (c == 'e' || c == 'E') {
+			isFloat = true
+			p.advance()
+			exp := "e"
+			if sign, ok := p.current(); ok && (sign == '+' || sign == '-') {
+				exp += string(sign)
+				p.advance()
+			}
+			digits, err := p.scanDecDigits()
+			if err != nil {
+				return nil, err
+			}
+			literal = literal + exp + digits
+		}
 	}
 
-	return nil, &ParseError{Message: "unterminated array", Position: p.pos}
+	// Reject type suffixes (u8/i32/f64/...).
+	if c, ok := p.current(); ok && (c == 'u' || c == 'i' || c == 'f') {
+		if next, ok := p.peek(1); ok && isAsciiAlphanumeric(next) {
+			return nil, p.syntaxErr(fmt.Sprintf("number type suffix not allowed (saw '%c%c')", c, next))
+		}
+	}
+
+	signed := literal
+	if negative {
+		signed = "-" + literal
+	}
+
+	if radix != 0 {
+		// Parse as big int to handle large values, then convert.
+		bi := new(big.Int)
+		_, ok := bi.SetString(literal, radix)
+		if !ok {
+			return nil, p.syntaxErr(fmt.Sprintf("could not parse number: %s", signed))
+		}
+		if negative {
+			bi.Neg(bi)
+		}
+		// Try int64, then uint64, then float64 fallback.
+		if bi.IsInt64() {
+			return bi.Int64(), nil
+		}
+		if bi.IsUint64() {
+			return bi.Uint64(), nil
+		}
+		f, _ := new(big.Float).SetInt(bi).Float64()
+		return f, nil
+	}
+
+	if !isFloat {
+		// Try int64 first, then uint64, then float64 fallback for large values.
+		if i, err := strconv.ParseInt(signed, 10, 64); err == nil {
+			return i, nil
+		}
+		if u, err := strconv.ParseUint(signed, 10, 64); err == nil {
+			return u, nil
+		}
+	}
+	f, err := strconv.ParseFloat(signed, 64)
+	if err != nil {
+		return nil, p.syntaxErr(fmt.Sprintf("could not parse number: %s", signed))
+	}
+	return f, nil
 }
 
-// =============================================================================
+// scanDecDigits scans a run of decimal digits with Rust-style underscores.
+func (p *parser) scanDecDigits() (string, error) {
+	var sb strings.Builder
+	lastWasUnder := false
+	hasDigit := false
+	for p.pos < len(p.input) {
+		c := p.input[p.pos]
+		if c >= '0' && c <= '9' {
+			sb.WriteByte(c)
+			lastWasUnder = false
+			hasDigit = true
+			p.advance()
+		} else if c == '_' {
+			if !hasDigit || lastWasUnder {
+				return "", p.syntaxErr("invalid underscore placement in number")
+			}
+			lastWasUnder = true
+			p.advance()
+		} else {
+			break
+		}
+	}
+	if !hasDigit {
+		return "", p.syntaxErr("number requires at least one digit")
+	}
+	if lastWasUnder {
+		return "", p.syntaxErr("number cannot end with underscore")
+	}
+	return sb.String(), nil
+}
+
+func (p *parser) scanRadixDigits(radix int) (string, error) {
+	var sb strings.Builder
+	lastWasUnder := false
+	hasDigit := false
+	for p.pos < len(p.input) {
+		c := p.input[p.pos]
+		ok := false
+		switch radix {
+		case 16:
+			ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		case 8:
+			ok = c >= '0' && c <= '7'
+		case 2:
+			ok = c == '0' || c == '1'
+		}
+		if ok {
+			sb.WriteByte(c)
+			lastWasUnder = false
+			hasDigit = true
+			p.advance()
+		} else if c == '_' {
+			if !hasDigit || lastWasUnder {
+				return "", p.syntaxErr("invalid underscore placement in number")
+			}
+			lastWasUnder = true
+			p.advance()
+		} else {
+			break
+		}
+	}
+	if !hasDigit {
+		return "", p.syntaxErr("number requires at least one digit after radix prefix")
+	}
+	if lastWasUnder {
+		return "", p.syntaxErr("number cannot end with underscore")
+	}
+	return sb.String(), nil
+}
+
+func (p *parser) parseBoolean() (Value, error) {
+	if matchesLiteral(p.input, p.pos, "true") {
+		advanceN(p, 4)
+		return true, nil
+	}
+	if matchesLiteral(p.input, p.pos, "false") {
+		advanceN(p, 5)
+		return false, nil
+	}
+	return nil, p.syntaxErr("invalid boolean value")
+}
+
+func (p *parser) parseNull() (Value, error) {
+	if matchesLiteral(p.input, p.pos, "null") {
+		advanceN(p, 4)
+		return nil, nil
+	}
+	return nil, p.syntaxErr("invalid null value")
+}
+
+func advanceN(p *parser, n int) {
+	for i := 0; i < n; i++ {
+		p.advance()
+	}
+}
+
+func matchesLiteral(input []byte, pos int, lit string) bool {
+	if pos+len(lit) > len(input) {
+		return false
+	}
+	for i := 0; i < len(lit); i++ {
+		if input[pos+i] != lit[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *parser) parseArray() (Value, error) {
+	p.advance() // [
+	arr := Array{}
+	p.skipWsAndComments()
+	for {
+		c, ok := p.current()
+		if !ok {
+			return nil, p.syntaxErr("unterminated array")
+		}
+		if c == ']' {
+			p.advance()
+			return arr, nil
+		}
+		val, err := p.parseValue()
+		if err != nil {
+			return nil, err
+		}
+		arr = append(arr, val)
+		sawNewline, sawComma := p.skipInterItemSeparator()
+		if c, ok := p.current(); ok && c == ']' {
+			p.advance()
+			return arr, nil
+		}
+		if !ok {
+			return nil, p.syntaxErr("unterminated array")
+		}
+		if !sawNewline && !sawComma {
+			return nil, p.syntaxErr("items on the same line must be separated by a comma")
+		}
+	}
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+func hexDigit(c byte) (uint32, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return uint32(c - '0'), true
+	case c >= 'a' && c <= 'f':
+		return uint32(c-'a') + 10, true
+	case c >= 'A' && c <= 'F':
+		return uint32(c-'A') + 10, true
+	}
+	return 0, false
+}
+
+func isAsciiAlphanumeric(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isKeyDelimiter returns true for any byte that terminates a bare key per
+// SPEC §3.3. All such bytes are ASCII, so UTF-8 continuation/lead bytes never
+// match.
+func isKeyDelimiter(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r',
+		'=', ',',
+		'{', '}', '[', ']',
+		'/', '"', '\'', '#':
+		return true
+	}
+	return false
+}
+
+// ============================================================================
 // Serializer
-// =============================================================================
+// ============================================================================
 
-// SerializeOptions controls serialization behavior
-type SerializeOptions struct {
-	SortKeys bool
-	Pretty   bool
-	Indent   string
-}
-
-// Serialize converts a Value to JHON format
+// Serialize produces compact JHON output: no spaces around =, no spaces after
+// commas, no trailing commas.
 func Serialize(v Value) string {
 	return SerializeWithOptions(v, SerializeOptions{})
 }
 
-// SerializeWithOptions converts a Value to JHON format with options
+// SerializeWithOptions produces compact or pretty JHON output.
+// When opts.Indent is non-empty, the output is pretty-printed (multi-line
+// with spaces around =, no trailing commas, no commas between properties).
 func SerializeWithOptions(v Value, opts SerializeOptions) string {
-	if opts.Pretty {
-		return serializePretty(v, opts.Indent, 0, false)
+	if opts.Indent != "" {
+		var sb strings.Builder
+		serializePretty(v, opts, 0, false, &sb)
+		return sb.String()
 	}
-	return serializeCompact(v)
+	var sb strings.Builder
+	serializeCompact(v, opts, &sb)
+	return sb.String()
 }
 
-// serializeCompact serializes a value in compact format
-func serializeCompact(v Value) string {
+// SerializePretty is a convenience wrapper that forces pretty mode.
+func SerializePretty(v Value, indent string) string {
+	return SerializeWithOptions(v, SerializeOptions{Indent: indent})
+}
+
+func serializeCompact(v Value, opts SerializeOptions, sb *strings.Builder) {
 	switch val := v.(type) {
 	case Object:
-		return serializeObjectCompact(val)
+		if len(val) == 0 {
+			return
+		}
+		serializeObjectCompact(val, opts, sb)
 	case Array:
-		return serializeArrayCompact(val)
+		if len(val) == 0 {
+			sb.WriteString("[]")
+			return
+		}
+		serializeArrayCompact(val, opts, sb)
 	case string:
-		return serializeString(val)
-	case float64:
-		return serializeFloat(val)
-	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	case nil:
-		return "null"
-	default:
-		// For other numeric types
-		return fmt.Sprintf("%v", val)
-	}
-}
-
-// serializeObjectCompact serializes an object in compact format
-func serializeObjectCompact(obj Object) string {
-	if len(obj) == 0 {
-		return ""
-	}
-
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	// Estimate capacity: avg key (10) + "=" (1) + avg value (20) + "," (1) per entry
-	estimatedSize := len(obj) * 32
-	var buf strings.Builder
-	buf.Grow(estimatedSize)
-
-	first := true
-	for _, key := range keys {
-		if !first {
-			buf.WriteByte(',')
-		}
-		first = false
-
-		// Write key
-		writeKeyCompact(&buf, key)
-
-		buf.WriteByte('=')
-
-		// Write value
-		writeValueCompact(&buf, obj[key])
-	}
-
-	return buf.String()
-}
-
-// serializeArrayCompact serializes an array in compact format
-func serializeArrayCompact(arr Array) string {
-	if len(arr) == 0 {
-		return "[]"
-	}
-
-	// Estimate capacity: avg element (15) + "," (1) per element + brackets (2)
-	estimatedSize := len(arr)*16 + 2
-	var buf strings.Builder
-	buf.Grow(estimatedSize)
-
-	buf.WriteByte('[')
-	first := true
-	for _, v := range arr {
-		if !first {
-			buf.WriteByte(',')
-		}
-		first = false
-
-		if obj, ok := v.(Object); ok {
-			buf.WriteByte('{')
-			if len(obj) > 0 {
-				buf.WriteString(serializeObjectCompact(obj))
-			}
-			buf.WriteByte('}')
-		} else {
-			writeValueCompact(&buf, v)
-		}
-	}
-	buf.WriteByte(']')
-
-	return buf.String()
-}
-
-// serializeKey serializes a key (quotes if necessary)
-func serializeKey(key string) string {
-	if needsQuoting(key) {
-		return serializeString(key)
-	}
-	return key
-}
-
-// serializeString serializes a string value
-func serializeString(s string) string {
-	var result strings.Builder
-	result.WriteByte('"')
-
-	for _, c := range s {
-		switch c {
-		case '\\':
-			result.WriteString("\\\\")
-		case '"':
-			result.WriteString("\\\"")
-		case '\n':
-			result.WriteString("\\n")
-		case '\r':
-			result.WriteString("\\r")
-		case '\t':
-			result.WriteString("\\t")
-		case '\b':
-			result.WriteString("\\b")
-		case '\f':
-			result.WriteString("\\f")
-		default:
-			if c < ' ' {
-				result.WriteString(fmt.Sprintf("\\u%04x", c))
-			} else {
-				result.WriteRune(c)
-			}
-		}
-	}
-
-	result.WriteByte('"')
-	return result.String()
-}
-
-// serializeFloat serializes a float number
-func serializeFloat(f float64) string {
-	// Check if it's a whole number
-	if f == float64(int64(f)) {
-		return fmt.Sprintf("%.0f", f)
-	}
-	return fmt.Sprintf("%g", f)
-}
-
-// =============================================================================
-// Optimized serialization helpers (write directly to strings.Builder)
-// =============================================================================
-
-// writeKeyCompact writes a key to the buffer, quoting if necessary
-func writeKeyCompact(buf *strings.Builder, key string) {
-	if needsQuoting(key) {
-		buf.WriteByte('"')
-		for _, c := range key {
-			switch c {
-			case '\\':
-				buf.WriteString("\\\\")
-			case '"':
-				buf.WriteString("\\\"")
-			default:
-				buf.WriteRune(c)
-			}
-		}
-		buf.WriteByte('"')
-	} else {
-		buf.WriteString(key)
-	}
-}
-
-// writeValueCompact writes a value to the buffer in compact format
-func writeValueCompact(buf *strings.Builder, v Value) {
-	switch val := v.(type) {
-	case Object:
-		buf.WriteByte('{')
-		if len(val) > 0 {
-			buf.WriteString(serializeObjectCompact(val))
-		}
-		buf.WriteByte('}')
-	case Array:
-		writeArrayCompact(buf, val)
-	case string:
-		buf.WriteByte('"')
-		for _, c := range val {
-			switch c {
-			case '\\':
-				buf.WriteString("\\\\")
-			case '"':
-				buf.WriteString("\\\"")
-			case '\n':
-				buf.WriteString("\\n")
-			case '\r':
-				buf.WriteString("\\r")
-			case '\t':
-				buf.WriteString("\\t")
-			case '\b':
-				buf.WriteString("\\b")
-			case '\f':
-				buf.WriteString("\\f")
-			default:
-				if c < ' ' {
-					buf.WriteString(fmt.Sprintf("\\u%04x", c))
-				} else {
-					buf.WriteRune(c)
-				}
-			}
-		}
-		buf.WriteByte('"')
-	case float64:
-		// Optimized float serialization
-		if val == float64(int64(val)) {
-			buf.WriteString(strconv.FormatInt(int64(val), 10))
-		} else {
-			buf.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
-		}
-	case bool:
-		if val {
-			buf.WriteString("true")
-		} else {
-			buf.WriteString("false")
-		}
-	case nil:
-		buf.WriteString("null")
-	case int:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		serializeString(val, sb)
 	case int64:
-		buf.WriteString(strconv.FormatInt(val, 10))
-	case int32:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
-	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		sb.WriteString(strconv.FormatInt(val, 10))
 	case uint64:
-		buf.WriteString(strconv.FormatUint(val, 10))
-	case uint32:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		sb.WriteString(strconv.FormatUint(val, 10))
+	case int:
+		sb.WriteString(strconv.Itoa(val))
+	case float64:
+		serializeFloat(val, sb)
+	case bool:
+		if val {
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
+		}
+	case nil:
+		sb.WriteString("null")
 	default:
-		buf.WriteString(fmt.Sprintf("%v", val))
+		// Best-effort fallback.
+		sb.WriteString(fmt.Sprintf("%v", val))
 	}
 }
 
-// writeArrayCompact writes an array to the buffer in compact format
-func writeArrayCompact(buf *strings.Builder, arr Array) {
-	buf.WriteByte('[')
+func serializeObjectCompact(obj Object, opts SerializeOptions, sb *strings.Builder) {
+	keys := objectKeys(obj, opts.SortKeys)
+	first := true
+	for _, k := range keys {
+		if !first {
+			sb.WriteByte(',')
+		}
+		first = false
+		serializeKey(k, sb)
+		sb.WriteByte('=')
+		v := obj[k]
+		if inner, ok := v.(Object); ok {
+			if len(inner) == 0 {
+				sb.WriteString("{}")
+			} else {
+				sb.WriteByte('{')
+				serializeObjectCompact(inner, opts, sb)
+				sb.WriteByte('}')
+			}
+			continue
+		}
+		serializeCompact(v, opts, sb)
+	}
+}
+
+func serializeArrayCompact(arr Array, opts SerializeOptions, sb *strings.Builder) {
+	sb.WriteByte('[')
 	first := true
 	for _, v := range arr {
 		if !first {
-			buf.WriteByte(',')
+			sb.WriteByte(',')
 		}
 		first = false
-		writeValueCompact(buf, v)
+		if inner, ok := v.(Object); ok {
+			if len(inner) == 0 {
+				sb.WriteString("{}")
+			} else {
+				sb.WriteByte('{')
+				serializeObjectCompact(inner, opts, sb)
+				sb.WriteByte('}')
+			}
+			continue
+		}
+		serializeCompact(v, opts, sb)
 	}
-	buf.WriteByte(']')
+	sb.WriteByte(']')
 }
 
-// serializePretty serializes a value with pretty formatting
-func serializePretty(v Value, indent string, depth int, inArray bool) string {
+func serializePretty(v Value, opts SerializeOptions, depth int, inArray bool, sb *strings.Builder) {
 	switch val := v.(type) {
 	case Object:
-		return serializeObjectPretty(val, indent, depth, inArray)
+		if len(val) == 0 {
+			if inArray || depth > 0 {
+				sb.WriteString("{}")
+			}
+			return
+		}
+		serializeObjectPretty(val, opts, depth, inArray, sb)
 	case Array:
-		return serializeArrayPretty(val, indent, depth)
+		if len(val) == 0 {
+			sb.WriteString("[]")
+			return
+		}
+		serializeArrayPretty(val, opts, depth, sb)
 	case string:
-		return serializeString(val)
+		serializeString(val, sb)
+	case int64:
+		sb.WriteString(strconv.FormatInt(val, 10))
+	case uint64:
+		sb.WriteString(strconv.FormatUint(val, 10))
+	case int:
+		sb.WriteString(strconv.Itoa(val))
 	case float64:
-		return serializeFloat(val)
+		serializeFloat(val, sb)
 	case bool:
 		if val {
-			return "true"
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
 		}
-		return "false"
 	case nil:
-		return "null"
-	default:
-		return fmt.Sprintf("%v", val)
+		sb.WriteString("null")
 	}
 }
 
-// serializeObjectPretty serializes an object with pretty formatting
-func serializeObjectPretty(obj Object, indent string, depth int, inArray bool) string {
-	if len(obj) == 0 {
-		return ""
+func serializeObjectPretty(obj Object, opts SerializeOptions, depth int, inArray bool, sb *strings.Builder) {
+	indent := opts.Indent
+	if indent == "" {
+		indent = "  "
 	}
-
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
-	}
-	sortStrings(keys)
-
-	var parts []string
-	for _, key := range keys {
-		serializedKey := serializeKey(key)
-		serializedValue := serializePretty(obj[key], indent, depth+1, false)
-
-		if inArray {
-			innerIndent := strings.Repeat(indent, depth+2)
-			parts = append(parts, fmt.Sprintf("%s%s = %s", innerIndent, serializedKey, serializedValue))
-		} else if depth == 0 {
-			parts = append(parts, fmt.Sprintf("%s = %s", serializedKey, serializedValue))
-		} else {
-			innerIndent := strings.Repeat(indent, depth)
-			parts = append(parts, fmt.Sprintf("%s%s = %s", innerIndent, serializedKey, serializedValue))
+	if inArray {
+		for i := 0; i < depth+1; i++ {
+			sb.WriteString(indent)
 		}
+		sb.WriteString("{\n")
+	} else if depth > 0 {
+		sb.WriteString("{\n")
+	}
+
+	keys := objectKeys(obj, opts.SortKeys)
+	first := true
+	for _, k := range keys {
+		if !first {
+			sb.WriteByte('\n')
+		}
+		first = false
+		var innerDepth int
+		switch {
+		case inArray:
+			innerDepth = depth + 2
+		case depth == 0:
+			innerDepth = 0
+		default:
+			innerDepth = depth
+		}
+		for i := 0; i < innerDepth; i++ {
+			sb.WriteString(indent)
+		}
+		serializeKey(k, sb)
+		sb.WriteString(" = ")
+		serializePretty(obj[k], opts, depth+1, false, sb)
 	}
 
 	if inArray {
-		braceIndent := strings.Repeat(indent, depth+1)
-		return fmt.Sprintf("%s{\n%s\n%s}", braceIndent, strings.Join(parts, ",\n"), braceIndent)
-	} else if depth == 0 {
-		return strings.Join(parts, ",\n")
-	} else {
-		outerIndent := strings.Repeat(indent, depth-1)
-		return fmt.Sprintf("{\n%s\n%s}", strings.Join(parts, ",\n"), outerIndent)
+		sb.WriteByte('\n')
+		for i := 0; i < depth+1; i++ {
+			sb.WriteString(indent)
+		}
+		sb.WriteByte('}')
+	} else if depth > 0 {
+		sb.WriteByte('\n')
+		for i := 0; i < depth-1; i++ {
+			sb.WriteString(indent)
+		}
+		sb.WriteByte('}')
 	}
 }
 
-// serializeArrayPretty serializes an array with pretty formatting
-func serializeArrayPretty(arr Array, indent string, depth int) string {
-	if len(arr) == 0 {
-		return "[]"
+func serializeArrayPretty(arr Array, opts SerializeOptions, depth int, sb *strings.Builder) {
+	indent := opts.Indent
+	if indent == "" {
+		indent = "  "
 	}
-
-	outerIndent := ""
-	if depth > 0 {
-		outerIndent = strings.Repeat(indent, depth-1)
-	}
-
-	var elements []string
+	sb.WriteString("[\n")
+	first := true
 	for _, v := range arr {
-		if obj, ok := v.(Object); ok {
-			objectDepth := depth - 1
-			if objectDepth < 0 {
-				objectDepth = 0
-			}
-			elements = append(elements, serializePretty(obj, indent, objectDepth, true))
+		if !first {
+			sb.WriteByte('\n')
+		}
+		first = false
+		if _, isObj := v.(Object); isObj {
+			serializePretty(v, opts, depth, true, sb)
 		} else {
-			elementIndent := indent
-			if depth > 0 {
-				elementIndent = strings.Repeat(indent, depth)
+			for i := 0; i < depth+1; i++ {
+				sb.WriteString(indent)
 			}
-			serialized := serializePretty(v, indent, depth+1, false)
-			elements = append(elements, elementIndent+serialized)
+			serializePretty(v, opts, depth+1, false, sb)
 		}
 	}
-
-	return "[\n" + strings.Join(elements, ",\n") + "\n" + outerIndent + "]"
+	sb.WriteByte('\n')
+	for i := 0; i < depth; i++ {
+		sb.WriteString(indent)
+	}
+	sb.WriteByte(']')
 }
 
-// =============================================================================
-// Utility Functions
-// =============================================================================
-
-func isWhitespace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+func objectKeys(obj Object, sortKeys bool) []string {
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	if sortKeys {
+		sort.Strings(keys)
+	}
+	return keys
 }
 
-func isUnquotedKeyChar(c byte) bool {
-	return unicode.IsLetter(rune(c)) || unicode.IsDigit(rune(c)) || c == '_' || c == '-'
+func serializeKey(key string, sb *strings.Builder) {
+	if needsQuoting(key) {
+		serializeString(key, sb)
+		return
+	}
+	sb.WriteString(key)
 }
 
 func needsQuoting(s string) bool {
 	if s == "" {
 		return true
 	}
-	for _, c := range s {
-		if !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '_' && c != '-' {
+	for i := 0; i < len(s); i++ {
+		if isKeyDelimiter(s[i]) {
 			return true
 		}
 	}
 	return false
 }
 
-// sortStrings is now using stdlib sort.Strings
-// Kept as an alias for compatibility, but no longer needed
-func sortStrings(slice []string) {
-	sort.Strings(slice)
-}
-
-// =============================================================================
-// JSON Integration
-// =============================================================================
-
-// MarshalJSON implements json.Marshaler interface for Object
-func (o Object) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]Value(o))
-}
-
-// UnmarshalJSON implements json.Unmarshaler interface for Object
-func (o *Object) UnmarshalJSON(data []byte) error {
-	var m map[string]Value
-	if err := json.Unmarshal(data, &m); err != nil {
-		return err
+func serializeString(s string, sb *strings.Builder) {
+	sb.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '\\':
+			sb.WriteString("\\\\")
+		case '"':
+			sb.WriteString("\\\"")
+		case '\n':
+			sb.WriteString("\\n")
+		case '\r':
+			sb.WriteString("\\r")
+		case '\t':
+			sb.WriteString("\\t")
+		case 0x08:
+			sb.WriteString("\\b")
+		case 0x0c:
+			sb.WriteString("\\f")
+		default:
+			if c < 0x20 {
+				const hex = "0123456789abcdef"
+				sb.WriteString("\\u00")
+				sb.WriteByte(hex[c>>4])
+				sb.WriteByte(hex[c&0x0f])
+			} else {
+				sb.WriteByte(c)
+			}
+		}
 	}
-	*o = m
-	return nil
+	sb.WriteByte('"')
 }
 
-// =============================================================================
-// Errors
-// =============================================================================
-
-var (
-	ErrInvalidSyntax   = errors.New("invalid jhon syntax")
-	ErrUnterminatedString = errors.New("unterminated string")
-	ErrExpectedEquals  = errors.New("expected '=' after key")
-)
+func serializeFloat(f float64, sb *strings.Builder) {
+	if f == float64(int64(f)) && f >= -9.2e18 && f <= 9.2e18 {
+		sb.WriteString(strconv.FormatInt(int64(f), 10))
+		return
+	}
+	sb.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+}

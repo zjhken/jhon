@@ -150,6 +150,23 @@ Bare keys may contain any character except whitespace, `=`, `,`, `{ } [ ]`, `/`,
 - Empty input parses to `{}`.
 - Trailing commas are allowed everywhere.
 
+## Performance
+
+Benchmarked against `JSON.parse` / `JSON.stringify` (V8 native) on Apple Silicon, 100,000 iterations each, with the same Small and Medium inputs the Rust criterion bench uses.
+
+| Operation | JHON | JSON (native) | vs JSON |
+|-----------|------|---------------|---------|
+| Parse Small | ~870 ns | ~90 ns | 9.5x slower |
+| Parse Medium | ~4,050 ns | ~435 ns | 9.2x slower |
+| Serialize Small | ~335 ns | ~70 ns | 4.8x slower |
+| Serialize Medium | ~1,560 ns | ~230 ns | 6.8x slower |
+
+The absolute numbers are ~30x faster than v1.x (which measured 24,900 ns for parse-small) thanks to the rewrite — the parser is now byte-by-byte (no regex, no string concatenation in hot loops), the serializer uses cached indent strings, and comments are attached in a single post-pass rather than tokenized separately.
+
+For configuration files (typically <10 KB), JHON parse latency is well under a millisecond — well below file I/O and editor paint time. The 9x gap to native JSON is the cost of JHON's extra features (comments, raw strings, radix literals, flexible separators, position tracking for diagnostics).
+
+Reproduce: `bun run benchmark` (parse-only) or see the script in commit history for the Small/Medium comparison.
+
 ## v2 migration
 
 v2.0.0 is a clean rewrite. Notable changes from v1.x:

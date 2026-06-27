@@ -40,6 +40,16 @@
           </execution>
         </executions>
       </plugin>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>run-jmh</id>
+            <phase>none</phase>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
   <dependencies>
@@ -72,9 +82,9 @@
   </dependencies>
   <properties>
     <jmh.version>1.37</jmh.version>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.target>21</maven.compiler.target>
-    <junit.version>5.10.1</junit.version>
     <maven.compiler.source>21</maven.compiler.source>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <junit.version>5.10.1</junit.version>
   </properties>
 </project>

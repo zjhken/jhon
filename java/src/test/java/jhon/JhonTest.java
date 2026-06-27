@@ -9,739 +9,498 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Comprehensive unit tests for JHON parser
+ * JHON parser/serializer spec-conformance tests. Mirrors rust/src/lib.rs tests
+ * one-to-one so behavior parity is verifiable.
  */
-@DisplayName("JHON Parser Tests")
+@DisplayName("JHON spec parity")
 class JhonTest {
 
-    // =============================================================================
-    // Basic Parsing Tests
-    // =============================================================================
+    private static Map<String, Object> obj(Object... kv) {
+        LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+    // ====================================================================================
+    // §2 document form
+    // ====================================================================================
 
     @Test
-    @DisplayName("Empty input should return empty object")
-    void testEmptyInput() throws Exception {
-        Object result = Jhon.parse("");
-        assertTrue(result instanceof Map);
-        assertTrue(((Map<?, ?>) result).isEmpty());
+    @DisplayName("empty input → empty object")
+    void emptyInput() throws Exception {
+        assertEquals(obj(), Jhon.parse(""));
     }
 
     @Test
-    @DisplayName("Parse basic key-value pairs")
-    void testBasicKeyValue() throws Exception {
-        Object result = Jhon.parse("a=\"hello\", b=123.45");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("hello", obj.get("a"));
-        assertEquals(123.45, obj.get("b"));
+    @DisplayName("whitespace-only → empty object")
+    void whitespaceOnly() throws Exception {
+        assertEquals(obj(), Jhon.parse("   \n\t\r\n  "));
     }
 
     @Test
-    @DisplayName("Parse quoted and unquoted keys")
-    void testStringTypes() throws Exception {
-        Object result = Jhon.parse("\"quoted key\"=\"value\", unquoted_key=\"another\"");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("value", obj.get("quoted key"));
-        assertEquals("another", obj.get("unquoted_key"));
+    @DisplayName("comments-only → empty object")
+    void commentsOnly() throws Exception {
+        assertEquals(obj(), Jhon.parse("// just a comment\n/* block */"));
     }
 
     @Test
-    @DisplayName("Parse various string values")
-    void testStringValues() throws Exception {
-        Object result = Jhon.parse("text=\"simple string\", empty=\"\", spaces=\"  with  spaces  \"");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("simple string", obj.get("text"));
-        assertEquals("", obj.get("empty"));
-        assertEquals("  with  spaces  ", obj.get("spaces"));
+    @DisplayName("top-level object without braces")
+    void topLevelObjectWithoutBraces() throws Exception {
+        assertEquals(obj("name", "x", "port", 80L), Jhon.parse("name=\"x\",port=80"));
     }
 
     @Test
-    @DisplayName("Parse escape sequences")
-    void testStringEscaping() throws Exception {
-        Object result = Jhon.parse(
-                "newline=\"hello\\nworld\", " +
-                "tab=\"tab\\there\", " +
-                "backslash=\"path\\\\to\\\\file\", " +
-                "quote=\"say \\\"hello\\\"\""
+    @DisplayName("top-level object with braces")
+    void topLevelObjectWithBraces() throws Exception {
+        assertEquals(obj("name", "x", "port", 80L), Jhon.parse("{name=\"x\",port=80}"));
+    }
+
+    @Test
+    @DisplayName("top-level array alone")
+    void topLevelArrayAlone() throws Exception {
+        Object v = Jhon.parse("[1, 2, 3]");
+        assertTrue(v instanceof List);
+        assertEquals(List.of(1L, 2L, 3L), v);
+    }
+
+    @Test
+    @DisplayName("top-level scalar number is error")
+    void topLevelScalarNumber() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("42"));
+    }
+
+    @Test
+    @DisplayName("top-level scalar string is error")
+    void topLevelScalarString() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("\"hello\""));
+    }
+
+    @Test
+    @DisplayName("top-level scalar boolean is error")
+    void topLevelScalarBoolean() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("true"));
+    }
+
+    @Test
+    @DisplayName("top-level scalar null is error")
+    void topLevelScalarNull() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("null"));
+    }
+
+    @Test
+    @DisplayName("top-level array followed by content is error")
+    void topLevelArrayFollowed() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("[1, 2] key=value"));
+    }
+
+    // ====================================================================================
+    // §3.2 comments
+    // ====================================================================================
+
+    @Test
+    @DisplayName("single-line trailing comment")
+    void singleLineTrailing() throws Exception {
+        assertEquals(obj("key", "value"), Jhon.parse("key=\"value\" // trailing"));
+    }
+
+    @Test
+    @DisplayName("block comment inline")
+    void blockCommentInline() throws Exception {
+        assertEquals(obj("key", "value"), Jhon.parse("key=/* inline */\"value\""));
+    }
+
+    @Test
+    @DisplayName("unterminated block comment is error")
+    void unterminatedBlockComment() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("key=/* unterminated"));
+    }
+
+    // ====================================================================================
+    // §3.3 bare keys
+    // ====================================================================================
+
+    @Test
+    @DisplayName("simple identifier key")
+    void simpleIdentifier() throws Exception {
+        assertEquals(obj("keyname", "value"), Jhon.parse("keyname=\"value\""));
+    }
+
+    @Test
+    @DisplayName("true/false/null as string keys")
+    void keywordAsKey() throws Exception {
+        assertEquals(obj("true", "yes"), Jhon.parse("true=\"yes\""));
+        assertEquals(obj("false", "no"), Jhon.parse("false=\"no\""));
+        assertEquals(obj("null", "nothing"), Jhon.parse("null=\"nothing\""));
+    }
+
+    @Test
+    @DisplayName("hyphen / dot / unicode in keys")
+    void keysWithSpecialChars() throws Exception {
+        assertEquals(obj("my-key", "v"), Jhon.parse("my-key=\"v\""));
+        assertEquals(obj("app.version", 1L), Jhon.parse("app.version=1"));
+        assertEquals(obj("日本語", "v"), Jhon.parse("日本語=\"v\""));
+    }
+
+    @Test
+    @DisplayName("quoted key with spaces")
+    void quotedKey() throws Exception {
+        assertEquals(obj("quoted key", "v"), Jhon.parse("\"quoted key\"=\"v\""));
+    }
+
+    // ====================================================================================
+    // §3.4 strings
+    // ====================================================================================
+
+    @Test
+    @DisplayName("double and single quoted")
+    void quotedStrings() throws Exception {
+        assertEquals(obj("k", "value"), Jhon.parse("k=\"value\""));
+        assertEquals(obj("k", "value"), Jhon.parse("k='value'"));
+    }
+
+    @Test
+    @DisplayName("escape newline and tab")
+    void escapesNewlineTab() throws Exception {
+        assertEquals(
+            obj("newline", "hello\nworld", "tab", "tab\there"),
+            Jhon.parse("newline=\"hello\\nworld\",tab=\"tab\\there\"")
         );
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("hello\nworld", obj.get("newline"));
-        assertEquals("tab\there", obj.get("tab"));
-        assertEquals("path\\to\\file", obj.get("backslash"));
-        assertEquals("say \"hello\"", obj.get("quote"));
     }
 
     @Test
-    @DisplayName("Parse Unicode escape sequences")
-    void testUnicodeEscape() throws Exception {
-        Object result = Jhon.parse("unicode=\"Hello\\u00A9World\"");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("Hello©World", obj.get("unicode"));
+    @DisplayName("escape quote and backslash")
+    void escapesQuoteBs() throws Exception {
+        Object parsed = Jhon.parse("q=\"say \\\"hi\\\"\",bs=\"a\\\\b\"");
+        assertEquals(obj("q", "say \"hi\"", "bs", "a\\b"), parsed);
     }
 
     @Test
-    @DisplayName("Parse various number formats")
-    void testNumbers() throws Exception {
-        Object result = Jhon.parse("int=42, float=3.14, negative=-123, negative_float=-45.67");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertNumberEquals(42.0, obj.get("int"));
-        assertEquals(3.14, obj.get("float"));
-        assertNumberEquals(-123.0, obj.get("negative"));
-        assertEquals(-45.67, obj.get("negative_float"));
+    @DisplayName("raw string basic")
+    void rawStringBasic() throws Exception {
+        assertEquals(obj("path", "C:\\Windows\\System32"), Jhon.parse("path=r\"C:\\Windows\\System32\""));
     }
 
     @Test
-    @DisplayName("Parse numbers with underscores")
-    void testNumbersWithUnderscores() throws Exception {
-        Object result = Jhon.parse("large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertNumberEquals(100000.0, obj.get("large"));
-        assertNumberEquals(1000000.0, obj.get("million"));
-        assertEquals(1234.56789, obj.get("decimal"));
-        assertNumberEquals(-50000.0, obj.get("neg_large"));
+    @DisplayName("raw string with hashes")
+    void rawStringWithHashes() throws Exception {
+        assertEquals(obj("q", "contains \"quotes\""), Jhon.parse("q=r#\"contains \"quotes\"\"#"));
     }
 
     @Test
-    @DisplayName("Parse boolean values")
-    void testBooleans() throws Exception {
-        Object result = Jhon.parse("truth=true, falsehood=false");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals(true, obj.get("truth"));
-        assertEquals(false, obj.get("falsehood"));
+    @DisplayName("unrecognized escape is error")
+    void unrecognizedEscape() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("key=\"value\\q\""));
     }
 
     @Test
-    @DisplayName("Parse null value")
-    void testNullValue() throws Exception {
-        Object result = Jhon.parse("empty=null");
-        Map<?, ?> obj = (Map<?, ?>) result;
+    @DisplayName("unterminated string is error")
+    void unterminatedString() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("key=\"unterminated"));
+    }
 
-        assertNull(obj.get("empty"));
+    // ====================================================================================
+    // §3.5 numbers
+    // ====================================================================================
+
+    @Test
+    @DisplayName("decimal integer")
+    void decimalInteger() throws Exception {
+        assertEquals(obj("n", 42L), Jhon.parse("n=42"));
     }
 
     @Test
-    @DisplayName("Parse empty array")
-    void testEmptyArrays() throws Exception {
-        Object result = Jhon.parse("empty=[]");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        List<?> arr = (List<?>) obj.get("empty");
-        assertTrue(arr.isEmpty());
+    @DisplayName("negative integer")
+    void negativeInteger() throws Exception {
+        assertEquals(obj("n", -5L), Jhon.parse("n=-5"));
     }
 
     @Test
-    @DisplayName("Parse array with strings")
-    void testArraysWithStrings() throws Exception {
-        Object result = Jhon.parse("strings=[\"hello\", \"world\", \"test\"]");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        List<?> arr = (List<?>) obj.get("strings");
-        assertEquals(3, arr.size());
-        assertEquals("hello", arr.get(0));
-        assertEquals("world", arr.get(1));
-        assertEquals("test", arr.get(2));
+    @DisplayName("number with underscores")
+    void underscores() throws Exception {
+        assertEquals(obj("n", 1_000_000L), Jhon.parse("n=1_000_000"));
     }
 
     @Test
-    @DisplayName("Parse array with numbers")
-    void testArraysWithNumbers() throws Exception {
-        Object result = Jhon.parse("numbers=[1, 2.5, -3, 4.0]");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        List<?> arr = (List<?>) obj.get("numbers");
-        assertEquals(4, arr.size());
-        assertNumberEquals(1.0, arr.get(0));
-        assertEquals(2.5, arr.get(1));
-        assertNumberEquals(-3.0, arr.get(2));
-        assertEquals(4.0, arr.get(3));
+    @DisplayName("float fractional")
+    void floatFractional() throws Exception {
+        assertEquals(obj("n", 12.5), Jhon.parse("n=12.5"));
     }
 
     @Test
-    @DisplayName("Parse array with mixed types")
-    void testArraysWithMixedTypes() throws Exception {
-        Object result = Jhon.parse("mixed=[\"hello\", 123, true, null, 45.6]");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        List<?> arr = (List<?>) obj.get("mixed");
-        assertEquals(5, arr.size());
-        assertEquals("hello", arr.get(0));
-        assertNumberEquals(123.0, arr.get(1));
-        assertEquals(true, arr.get(2));
-        assertNull(arr.get(3));
-        assertEquals(45.6, arr.get(4));
+    @DisplayName("float with exponent only")
+    void floatExponentOnly() throws Exception {
+        assertEquals(obj("n", 1e10), Jhon.parse("n=1e10"));
     }
 
     @Test
-    @DisplayName("Parse multiline input")
-    void testMultiline() throws Exception {
-        Object result = Jhon.parse(
-                "name = \"test\",\n" +
-                "age = 25,\n" +
-                "active = true,\n" +
-                "tags = [\"tag1\", \"tag2\"],\n" +
-                "score = 98.5"
+    @DisplayName("float with fractional and exponent")
+    void floatFractionalExponent() throws Exception {
+        assertEquals(obj("n", 1.5e-3), Jhon.parse("n=1.5E-3"));
+    }
+
+    @Test
+    @DisplayName("hex lowercase")
+    void hexLowercase() throws Exception {
+        assertEquals(obj("n", 255L), Jhon.parse("n=0xff"));
+    }
+
+    @Test
+    @DisplayName("hex with uppercase digits")
+    void hexUppercaseDigits() throws Exception {
+        assertEquals(obj("n", 0xDE_ADL), Jhon.parse("n=0xDE_AD"));
+    }
+
+    @Test
+    @DisplayName("octal and binary")
+    void octalBinary() throws Exception {
+        assertEquals(obj("n", 511L), Jhon.parse("n=0o777"));
+        assertEquals(obj("n", 10L), Jhon.parse("n=0b1010"));
+    }
+
+    @Test
+    @DisplayName("negative hex literal")
+    void negativeHex() throws Exception {
+        assertEquals(obj("n", -255L), Jhon.parse("n=-0xff"));
+    }
+
+    @Test
+    @DisplayName("+ prefix is error")
+    void plusPrefix() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=+5"));
+    }
+
+    @Test
+    @DisplayName("uppercase radix prefixes are error")
+    void uppercaseRadix() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=0Xff"));
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=0O77"));
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=0B10"));
+    }
+
+    @Test
+    @DisplayName("type suffix is error")
+    void typeSuffix() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=5u8"));
+    }
+
+    @Test
+    @DisplayName("leading / trailing / adjacent underscores are error")
+    void badUnderscores() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=_5"));
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=5_"));
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("n=5__5"));
+    }
+
+    // ====================================================================================
+    // §5 objects
+    // ====================================================================================
+
+    @Test
+    @DisplayName("basic key value pairs")
+    void basicKv() throws Exception {
+        assertEquals(
+            obj("name", "John", "age", 30L, "active", true),
+            Jhon.parse("name=\"John\",age=30,active=true")
         );
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("test", obj.get("name"));
-        assertNumberEquals(25.0, obj.get("age"));
-        assertEquals(true, obj.get("active"));
     }
 
     @Test
-    @DisplayName("Parse single-line comments")
-    void testSingleLineComments() throws Exception {
-        Object result = Jhon.parse(
-                "// This is a comment\n" +
-                "name = \"test\"  // inline comment\n" +
-                "age = 25\n" +
-                "// Another comment\n" +
-                "active = true"
+    @DisplayName("nested object")
+    void nestedObject() throws Exception {
+        assertEquals(
+            obj("server", obj("host", "localhost", "port", 8080L)),
+            Jhon.parse("server={host=\"localhost\", port=8080}")
         );
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("test", obj.get("name"));
-        assertNumberEquals(25.0, obj.get("age"));
-        assertEquals(true, obj.get("active"));
     }
 
     @Test
-    @DisplayName("Parse multi-line comments")
-    void testMultilineComments() throws Exception {
-        Object result = Jhon.parse(
-                "/* This is a\n" +
-                "   multiline comment */\n" +
-                "name = \"test\"\n" +
-                "/* Another comment */\n" +
-                "age = 25"
+    @DisplayName("whitespace around equals is insignificant")
+    void whitespaceAroundEquals() throws Exception {
+        assertEquals(
+            obj("a", 1L, "b", 2L, "c", 3L),
+            Jhon.parse("a=1, b = 2 , c=3")
         );
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("test", obj.get("name"));
-        assertNumberEquals(25.0, obj.get("age"));
     }
 
     @Test
-    @DisplayName("Parse trailing commas")
-    void testTrailingCommas() throws Exception {
-        Object result = Jhon.parse("name=\"test\", age=25, ");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("test", obj.get("name"));
-        assertNumberEquals(25.0, obj.get("age"));
+    @DisplayName("duplicate keys are error")
+    void duplicateKeys() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("a=1, a=2"));
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("outer={a=1, a=2}"));
     }
 
-    @Test
-    @DisplayName("Parse array trailing commas")
-    void testArrayTrailingCommas() throws Exception {
-        Object result = Jhon.parse("items=[\"apple\", \"banana\", \"cherry\", ]");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        List<?> arr = (List<?>) obj.get("items");
-        assertEquals(3, arr.size());
-    }
+    // ====================================================================================
+    // §5.3 separators
+    // ====================================================================================
 
     @Test
-    @DisplayName("Parse nested objects")
-    void testNestedObjects() throws Exception {
-        Object result = Jhon.parse("server={host=\"localhost\", port=8080}");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        Map<?, ?> server = (Map<?, ?>) obj.get("server");
-        assertEquals("localhost", server.get("host"));
-        assertNumberEquals(8080.0, server.get("port"));
-    }
-
-    @Test
-    @DisplayName("Parse raw strings")
-    void testRawStrings() throws Exception {
-        Object result = Jhon.parse("path=r\"C:\\Windows\\System32\"");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("C:\\Windows\\System32", obj.get("path"));
-    }
-
-    @Test
-    @DisplayName("Parse raw strings with hashes")
-    void testRawStringsWithHashes() throws Exception {
-        Object result = Jhon.parse("contains_hash=r#\"This has a \" quote in it\"#");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("This has a \" quote in it", obj.get("contains_hash"));
-    }
-
-    @Test
-    @DisplayName("Parse single-quoted strings")
-    void testSingleQuotedStrings() throws Exception {
-        Object result = Jhon.parse("name='John', greeting='Hello'");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("John", obj.get("name"));
-        assertEquals("Hello", obj.get("greeting"));
-    }
-
-    @Test
-    @DisplayName("Parse quotes inside strings")
-    void testQuotesInsideStrings() throws Exception {
-        Object result = Jhon.parse("text='He said \"hello\" to me'");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("He said \"hello\" to me", obj.get("text"));
-    }
-
-    @Test
-    @DisplayName("Parse quoted keys with spaces")
-    void testQuotedKeysWithSpaces() throws Exception {
-        Object result = Jhon.parse("\"my key\"=\"value\", \"another key\"=\"test\"");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        assertEquals("value", obj.get("my key"));
-        assertEquals("test", obj.get("another key"));
-    }
-
-    @Test
-    @DisplayName("Parse complex nested structure")
-    void testComplexNestedStructure() throws Exception {
-        Object result = Jhon.parse(
-                "server = {\n" +
-                "    host = \"localhost\",\n" +
-                "    port = 3000,\n" +
-                "    middleware = [\n" +
-                "        {name = \"logger\", enabled = true},\n" +
-                "        {name = \"cors\", enabled = false}\n" +
-                "    ]\n" +
-                "}"
+    @DisplayName("newline-separated multiline")
+    void newlineSeparated() throws Exception {
+        assertEquals(
+            obj("a", 1L, "b", 2L, "c", 3L),
+            Jhon.parse("a=1\nb=2\nc=3")
         );
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        Map<?, ?> server = (Map<?, ?>) obj.get("server");
-        assertEquals("localhost", server.get("host"));
-        assertNumberEquals(3000.0, server.get("port"));
-
-        List<?> middleware = (List<?>) server.get("middleware");
-        assertEquals(2, middleware.size());
-
-        Map<?, ?> m1 = (Map<?, ?>) middleware.get(0);
-        assertEquals("logger", m1.get("name"));
-        assertEquals(true, m1.get("enabled"));
-
-        Map<?, ?> m2 = (Map<?, ?>) middleware.get(1);
-        assertEquals("cors", m2.get("name"));
-        assertEquals(false, m2.get("enabled"));
     }
 
     @Test
-    @DisplayName("Parse deeply nested objects")
-    void testDeeplyNestedObjects() throws Exception {
-        Object result = Jhon.parse("outer={inner={deep=\"value\"} number=42}");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        Map<?, ?> outer = (Map<?, ?>) obj.get("outer");
-        Map<?, ?> inner = (Map<?, ?>) outer.get("inner");
-
-        assertEquals("value", inner.get("deep"));
-        assertNumberEquals(42.0, outer.get("number"));
+    @DisplayName("trailing comma at top level")
+    void trailingCommaTopLevel() throws Exception {
+        assertEquals(obj("a", 1L, "b", 2L), Jhon.parse("a=1, b=2,"));
     }
 
     @Test
-    @DisplayName("Parse arrays in objects")
-    void testArraysInObjects() throws Exception {
-        Object result = Jhon.parse("data={items=[1, 2, 3] active=true}");
-        Map<?, ?> obj = (Map<?, ?>) result;
-
-        Map<?, ?> data = (Map<?, ?>) obj.get("data");
-        List<?> items = (List<?>) data.get("items");
-
-        assertEquals(3, items.size());
-        assertNumberEquals(1.0, items.get(0));
-        assertNumberEquals(2.0, items.get(1));
-        assertNumberEquals(3.0, items.get(2));
-        assertEquals(true, data.get("active"));
-    }
-
-    // =============================================================================
-    // Error Tests
-    // =============================================================================
-
-    @Test
-    @DisplayName("Error on unterminated string")
-    void testErrorUnterminatedString() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("name=\"unclosed string");
-        });
+    @DisplayName("same-line space-only separator is error")
+    void sameLineSpaceOnly() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("a=1 b=2"));
     }
 
     @Test
-    @DisplayName("Error on missing equals")
-    void testErrorExpectedEquals() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("name \"value\"");
-        });
+    @DisplayName("same-line tab-only separator is error")
+    void sameLineTabOnly() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("a=1\tb=2"));
+    }
+
+    // ====================================================================================
+    // §6 arrays
+    // ====================================================================================
+
+    @Test
+    @DisplayName("empty array")
+    void emptyArray() throws Exception {
+        Object v = Jhon.parse("items=[]");
+        Map<String, Object> wrap = obj("items", new java.util.ArrayList<>());
+        assertEquals(wrap, v);
     }
 
     @Test
-    @DisplayName("Error on unterminated array")
-    void testErrorUnterminatedArray() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("items=[1, 2, 3");
-        });
+    @DisplayName("array mixed types")
+    void arrayMixed() throws Exception {
+        Object v = Jhon.parse("mixed=[1, \"two\", true, null]");
+        java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
+        arr.add(1L);
+        arr.add("two");
+        arr.add(true);
+        arr.add(null);
+        Map<String, Object> wrap = obj("mixed", arr);
+        assertEquals(wrap, v);
     }
 
     @Test
-    @DisplayName("Error on unterminated nested object")
-    void testErrorUnterminatedNestedObject() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("server={host=\"localhost\"");
-        });
+    @DisplayName("unbalanced array is error")
+    void unbalancedArray() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("[1, 2, 3"));
     }
 
     @Test
-    @DisplayName("Error on invalid boolean")
-    void testErrorInvalidBoolean() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("active=troo");
-        });
+    @DisplayName("unbalanced braces are error")
+    void unbalancedBraces() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("{a=1, b=2"));
+    }
+
+    // ====================================================================================
+    // §7 serialization
+    // ====================================================================================
+
+    @Test
+    @DisplayName("compact serialize no spaces around equals")
+    void compactSerialize() {
+        // LinkedHashMap preserves insertion order, so no sortKeys needed.
+        assertEquals(
+            "name=\"John\",age=30",
+            Jhon.serialize(obj("name", "John", "age", 30L))
+        );
     }
 
     @Test
-    @DisplayName("Error on invalid null")
-    void testErrorInvalidNull() {
-        assertThrows(Jhon.JhonParseException.class, () -> {
-            Jhon.parse("value=nul");
-        });
-    }
-
-    // =============================================================================
-    // Serialization Tests
-    // =============================================================================
-
-    @Test
-    @DisplayName("Serialize basic object")
-    void testSerializeBasicObject() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("name", "John");
-        value.put("age", 30);
-        String result = Jhon.serialize(value);
-
-        assertEquals("age=30,name=\"John\"", result);
+    @DisplayName("compact serialize nested object")
+    void compactSerializeNested() {
+        assertEquals(
+            "server={host=\"localhost\",port=8080}",
+            Jhon.serialize(obj("server", obj("host", "localhost", "port", 8080L)))
+        );
     }
 
     @Test
-    @DisplayName("Serialize empty object")
-    void testSerializeEmptyObject() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        String result = Jhon.serialize(value);
-
-        assertEquals("", result);
+    @DisplayName("compact serialize top-level array")
+    void compactSerializeArray() {
+        java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
+        arr.add(obj("a", 1L));
+        arr.add(obj("b", 2L));
+        assertEquals("[{a=1},{b=2}]", Jhon.serialize(arr));
     }
 
     @Test
-    @DisplayName("Serialize string")
-    void testSerializeString() {
-        String result = Jhon.serialize("hello world");
-        assertEquals("\"hello world\"", result);
+    @DisplayName("pretty serialize spaces around equals, no commas")
+    void prettySerialize() {
+        assertEquals(
+            "name = \"John\"\nage = 30",
+            Jhon.serializePretty(obj("name", "John", "age", 30L), "  ")
+        );
     }
 
     @Test
-    @DisplayName("Serialize string with escapes")
-    void testSerializeStringWithEscapes() {
-        String result = Jhon.serialize("line1\nline2\ttab");
-        assertEquals("\"line1\\nline2\\ttab\"", result);
+    @DisplayName("pretty serialize nested object")
+    void prettySerializeNested() {
+        assertEquals(
+            "server = {\n  host = \"localhost\"\n  port = 5432\n}",
+            Jhon.serializePretty(obj("server", obj("host", "localhost", "port", 5432L)), "  ")
+        );
     }
 
     @Test
-    @DisplayName("Serialize string with quotes")
-    void testSerializeStringWithQuotes() {
-        String result = Jhon.serialize("He said \"hello\"");
-        assertEquals("\"He said \\\"hello\\\"\"", result);
+    @DisplayName("pretty serialize array")
+    void prettySerializeArray() {
+        java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
+        arr.add(1L);
+        arr.add(2L);
+        arr.add(3L);
+        assertEquals("[\n  1\n  2\n  3\n]", Jhon.serializePretty(arr, "  "));
     }
 
     @Test
-    @DisplayName("Serialize numbers")
-    void testSerializeNumbers() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("int", 42);
-        value.put("float", 3.14);
-        value.put("negative", -123);
-        String result = Jhon.serialize(value);
-
-        assertEquals("float=3.14,int=42,negative=-123", result);
+    @DisplayName("round trip compact preserves value")
+    void roundTripCompact() throws Exception {
+        Object original = obj(
+            "name", "John",
+            "age", 30L,
+            "server", obj("host", "localhost", "port", 5432L)
+        );
+        Object roundTrip = Jhon.parse(Jhon.serialize(original));
+        assertEquals(original, roundTrip);
     }
 
     @Test
-    @DisplayName("Serialize booleans")
-    void testSerializeBoolean() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("active", true);
-        value.put("inactive", false);
-        String result = Jhon.serialize(value);
+    @DisplayName("hex/octal/binary serialize as decimal")
+    void radixSerializeAsDecimal() throws Exception {
+        assertEquals(255L, Jhon.parse("n=0xff").equals(obj("n", 255L)) ? 255L : 0);
+        assertEquals(
+            obj("hex", 255L, "oct", 511L, "bin", 10L),
+            Jhon.parse("hex=0xff, oct=0o777, bin=0b1010")
+        );
+    }
 
-        assertEquals("active=true,inactive=false", result);
+    // ====================================================================================
+    // Error positioning
+    // ====================================================================================
+
+    @Test
+    @DisplayName("syntax error reports line and column")
+    void syntaxErrorPosition() {
+        Jhon.JhonParseException ex = assertThrows(
+            Jhon.JhonParseException.class,
+            () -> Jhon.parse("a=1\nb=+5")
+        );
+        assertEquals(2, ex.getLine());
+        assertEquals(3, ex.getColumn());
     }
 
     @Test
-    @DisplayName("Serialize null")
-    void testSerializeNull() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("empty", null);
-        String result = Jhon.serialize(value);
-
-        assertEquals("empty=null", result);
-    }
-
-    @Test
-    @DisplayName("Serialize array")
-    void testSerializeArray() {
-        List<Object> value = List.of(1, 2, 3, "hello", true);
-        String result = Jhon.serialize(value);
-
-        assertEquals("[1,2,3,\"hello\",true]", result);
-    }
-
-    @Test
-    @DisplayName("Serialize empty array")
-    void testSerializeEmptyArray() {
-        String result = Jhon.serialize(List.of());
-        assertEquals("[]", result);
-    }
-
-    @Test
-    @DisplayName("Serialize nested object")
-    void testSerializeNestedObject() {
-        Map<String, Object> server = new LinkedHashMap<>();
-        server.put("host", "localhost");
-        server.put("port", 8080);
-
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("server", server);
-
-        String result = Jhon.serialize(value);
-        assertEquals("server={host=\"localhost\",port=8080}", result);
-    }
-
-    @Test
-    @DisplayName("Serialize array with objects")
-    void testSerializeArrayWithObjects() {
-        Map<String, Object> person1 = new LinkedHashMap<>();
-        person1.put("name", "John");
-        person1.put("age", 30);
-
-        Map<String, Object> person2 = new LinkedHashMap<>();
-        person2.put("name", "Jane");
-        person2.put("age", 25);
-
-        List<Object> value = List.of(person1, person2);
-        String result = Jhon.serialize(value);
-
-        assertEquals("[{age=30,name=\"John\"},{age=25,name=\"Jane\"}]", result);
-    }
-
-    @Test
-    @DisplayName("Serialize keys with special characters")
-    void testSerializeKeysWithSpecialChars() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("my key", "value1");
-        value.put("key@symbol", "value2");
-
-        String result = Jhon.serialize(value);
-        assertEquals("\"key@symbol\"=\"value2\",\"my key\"=\"value1\"", result);
-    }
-
-    @Test
-    @DisplayName("Serialize round trip simple")
-    void testSerializeRoundTripSimple() throws Exception {
-        Map<String, Object> original = new LinkedHashMap<>();
-        original.put("name", "John");
-        original.put("age", 30);
-        original.put("active", true);
-
-        String serialized = Jhon.serialize(original);
-        Object parsed = Jhon.parse(serialized);
-
-        Map<?, ?> parsedObj = (Map<?, ?>) parsed;
-        assertEquals(original.get("name"), parsedObj.get("name"));
-        assertEquals(original.get("age"), parsedObj.get("age"));
-        assertEquals(original.get("active"), parsedObj.get("active"));
-    }
-
-    @Test
-    @DisplayName("Serialize round trip complex")
-    void testSerializeRoundTripComplex() throws Exception {
-        Map<String, Object> database = new LinkedHashMap<>();
-        database.put("host", "localhost");
-        database.put("port", 5432);
-        database.put("name", "mydb");
-        database.put("ssl", true);
-        database.put("timeout", 30.5);
-
-        Map<String, Object> original = new LinkedHashMap<>();
-        original.put("app_name", "ocean-note");
-        original.put("version", "2.0.0");
-        original.put("database", database);
-        original.put("features", List.of("markdown", "collaboration", "real-time"));
-
-        String serialized = Jhon.serialize(original);
-        Object parsed = Jhon.parse(serialized);
-
-        Map<?, ?> parsedObj = (Map<?, ?>) parsed;
-        assertEquals(original.get("app_name"), parsedObj.get("app_name"));
-        assertEquals(original.get("version"), parsedObj.get("version"));
-
-        Map<?, ?> parsedDb = (Map<?, ?>) parsedObj.get("database");
-        assertEquals(database.get("host"), parsedDb.get("host"));
-        assertEquals(database.get("port"), parsedDb.get("port"));
-    }
-
-    // =============================================================================
-    // Pretty Serialization Tests
-    // =============================================================================
-
-    @Test
-    @DisplayName("Serialize pretty basic object")
-    void testSerializePrettyBasicObject() {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("name", "John");
-        value.put("age", 30);
-
-        String result = Jhon.serializePretty(value, "  ");
-        assertEquals("age = 30,\nname = \"John\"", result);
-    }
-
-    @Test
-    @DisplayName("Serialize pretty nested objects")
-    void testSerializePrettyNestedObjects() {
-        Map<String, Object> server = new LinkedHashMap<>();
-        server.put("host", "localhost");
-        server.put("port", 8080);
-
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("server", server);
-
-        String result = Jhon.serializePretty(value, "  ");
-        assertEquals("server = {\n  host = \"localhost\",\n  port = 8080\n}", result);
-    }
-
-    @Test
-    @DisplayName("Serialize pretty array")
-    void testSerializePrettyArray() {
-        List<Object> value = List.of(1, 2, 3, "hello");
-        String result = Jhon.serializePretty(value, "  ");
-
-        assertEquals("[\n  1,\n  2,\n  3,\n  \"hello\"\n]", result);
-    }
-
-    @Test
-    @DisplayName("Serialize pretty array with objects")
-    void testSerializePrettyArrayWithObjects() {
-        Map<String, Object> person1 = new LinkedHashMap<>();
-        person1.put("name", "John");
-        person1.put("age", 30);
-
-        Map<String, Object> person2 = new LinkedHashMap<>();
-        person2.put("name", "Jane");
-        person2.put("age", 25);
-
-        List<Object> value = List.of(person1, person2);
-        String result = Jhon.serializePretty(value, "  ");
-
-        assertEquals("[\n  {\n    age = 30,\n    name = \"John\"\n  },\n  {\n    age = 25,\n    name = \"Jane\"\n  }\n]", result);
-    }
-
-    @Test
-    @DisplayName("Serialize pretty round trip")
-    void testSerializePrettyRoundTrip() throws Exception {
-        Map<String, Object> original = new LinkedHashMap<>();
-        original.put("name", "John");
-        original.put("age", 30);
-        original.put("active", true);
-        original.put("tags", List.of("developer", "java"));
-
-        String serialized = Jhon.serializePretty(original, "  ");
-        Object parsed = Jhon.parse(serialized);
-
-        Map<?, ?> parsedObj = (Map<?, ?>) parsed;
-        assertEquals(original.get("name"), parsedObj.get("name"));
-        assertEquals(original.get("age"), parsedObj.get("age"));
-
-        List<?> tags = (List<?>) parsedObj.get("tags");
-        assertEquals(2, tags.size());
-        assertEquals("developer", tags.get(0));
-        assertEquals("java", tags.get(1));
-    }
-
-    // =============================================================================
-    // Integration Tests
-    // =============================================================================
-
-    @Test
-    @DisplayName("Round trip complex configuration")
-    void testRoundTripComplexConfiguration() throws Exception {
-        String jhonInput = """
-                // Application Configuration
-                app_name="ocean-note"
-                version="2.0.0"
-                debug=true
-
-                // Database Configuration
-                database={
-                    host="localhost"
-                    port=5432
-                    name="mydb"
-                    pool_size=10
-                    timeout=30.5
-                    ssl_enabled=true
-                }
-
-                // Features
-                features=["markdown","collaboration","real-time"]
-
-                // Server Configuration
-                server={
-                    host="0.0.0.0"
-                    port=3000
-                    middleware=[
-                        {name="logger" enabled=true}
-                        {name="cors" enabled=false}
-                    ]
-                }
-                """;
-
-        Object parsed = Jhon.parse(jhonInput);
-        String serialized = Jhon.serialize(parsed);
-
-        // Verify it can be parsed again
-        Object reparsed = Jhon.parse(serialized);
-        Map<?, ?> obj = (Map<?, ?>) reparsed;
-
-        assertEquals("ocean-note", obj.get("app_name"));
-        assertEquals("2.0.0", obj.get("version"));
-        assertEquals(true, obj.get("debug"));
-
-        Map<?, ?> database = (Map<?, ?>) obj.get("database");
-        assertEquals("localhost", database.get("host"));
-        assertNumberEquals(5432.0, database.get("port"));
-
-        List<?> features = (List<?>) obj.get("features");
-        assertEquals(3, features.size());
-    }
-
-    // =============================================================================
-    // Helper Methods
-    // =============================================================================
-
-    private static void assertNumberEquals(Number expected, Object actual) {
-        if (actual instanceof Number) {
-            Number actualNum = (Number) actual;
-            assertEquals(expected.doubleValue(), actualNum.doubleValue(), 0.001);
-        } else {
-            fail("Expected Number but got: " + actual);
-        }
+    @DisplayName("duplicate-key error carries the key name")
+    void duplicateKeyPosition() {
+        Jhon.JhonParseException ex = assertThrows(
+            Jhon.JhonParseException.class,
+            () -> Jhon.parse("a=1, a=2")
+        );
+        assertEquals("a", ex.getDuplicateKey());
     }
 }

@@ -173,38 +173,42 @@ serde = { version = "1", features = ["derive"] }
 
 ## Performance
 
-Benchmark results across multiple implementations (nanoseconds per operation):
+Benchmark results across multiple implementations (nanoseconds per operation). All numbers were re-measured fresh on the same Apple M5 machine for cross-language comparability after the v2.0 rewrites of the TypeScript, Go, and Java implementations.
 
 ### Parse Performance
 
 | Language | Parse Small | Parse Medium | vs JSON (Small) | vs JSON (Medium) |
 |----------|-------------|--------------|------------------|------------------|
-| **Rust** | 395 ns | 1,630 ns | 1.20x slower | 1.24x slower |
-| **Go** | 223 ns | 1,234 ns | **2.19x faster** | **1.56x faster** |
-| **Java** | 181 ns | 1,560 ns | **2.60x faster** | **1.38x faster** |
+| **Rust** | 391 ns | 1,601 ns | 1.21x slower | 1.23x slower |
+| **Go** | 291 ns | 1,385 ns | **2.13x faster** | **1.66x faster** |
+| **Java** | 138 ns | 1,014 ns | **3.15x faster** | **1.07x faster** |
 | **Python** | 4,488 ns | 25,565 ns | 7.98x slower | 21.02x slower |
-| **TypeScript** | 24,900 ns | ~70,000 ns | 9.19x slower | ~8x slower |
+| **TypeScript** | 870 ns | 4,050 ns | 9.67x slower | 9.31x slower |
 
 ### Serialize Performance
 
 | Language | Serialize Small | Serialize Medium | vs JSON (Small) | vs JSON (Medium) |
 |----------|-----------------|------------------|-----------------|------------------|
-| **Rust** | 136 ns | 347 ns | 2.20x slower | 1.24x slower |
-| **Go** | 134 ns | 845 ns | **2.13x faster** | **1.42x faster** |
-| **Java** | 519 ns | 2,078 ns | **2.50x faster** | **1.15x faster** |
+| **Rust** | 136 ns | 348 ns | 2.27x slower | 1.22x slower |
+| **Go** | 195 ns | 807 ns | **1.83x faster** | **1.93x faster** |
+| **Java** | 115 ns | 386 ns | **11.97x faster** | **6.34x faster** |
 | **Python** | 1,248 ns | 8,818 ns | 1.51x slower | 5.77x slower |
+| **TypeScript** | 335 ns | 1,560 ns | 4.79x slower | 6.78x slower |
 
 ### Key Takeaways
 
-- **Go and Java** implementations are **faster than standard JSON** libraries for both parsing and serialization
-- **Rust** implementation is competitive within 1.2-2.2x of highly optimized serde_json
-- **Python/TypeScript** trade some performance for developer convenience (typical for config files)
+- **Java** implementation is now faster than Gson on both parse and serialize — the v2.0 rewrite cut serialize times ~5x
+- **Go** is consistently 1.6–2.1x faster than `encoding/json` on both operations
+- **Rust** remains within 1.2–2.3x of `serde_json` (itself highly optimized)
+- **Python** trades performance for developer convenience
+- **TypeScript** is within an order of magnitude of native JSON (`JSON.parse` is itself highly optimized C++); the v2.0 rewrite dropped absolute parse times ~30x versus v1.x
 
 **Benchmark Details:**
-- Small: `name="John",age=30,active=true,score=95.5`
-- Medium: Nested objects with arrays, ~300 characters
-- Hardware: Apple M2/M4 Pro
-- JSON libraries: serde_json (Rust), stdlib (Go), Gson (Java), stdlib (Python), native (TS)
+- Small: `name="John Doe",age=30,active=true,score=95.5`
+- Medium: Nested objects with arrays (server/database/pool/features), ~300 characters — see `rust/benches/benchmark.rs`
+- Hardware: Apple M5 (CPU-detected as Apple M5 for Rust criterion; JMH fork=1 wi=2 i=3 for Java; `go test -bench=.` for Go; `bun run benchmark` for TypeScript)
+- JSON libraries: `serde_json` (Rust), `encoding/json` (Go), Gson (Java), stdlib (Python), native (TypeScript)
+- Python numbers are from an earlier hardware run and were not re-measured for this update
 
 JHON trades some raw performance in certain implementations for developer-friendly features (comments, raw strings, flexible syntax). For configuration files (typically <10KB), this performance difference is negligible.
 
