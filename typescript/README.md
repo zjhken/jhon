@@ -167,6 +167,24 @@ For configuration files (typically <10 KB), JHON parse latency is well under a m
 
 Reproduce: `bun run benchmark` (parse-only) or see the script in commit history for the Small/Medium comparison.
 
+## Publishing
+
+The package is published to npm as `@zjhken/jhon` (scoped). One-time setup for a maintainer account:
+
+1. Create a granular access token at <https://www.npmjs.com/settings/~/tokens>. Pick "Granular Access Token", scope it to the `@zjhken/jhon` package, and select **Publishing** permission. Set **Require 2FA** to "off" for this token only (the publish step uses the token directly, not a TOTP prompt).
+2. Authenticate the local CLI — either via browser flow (`pnpm login` and follow the prompt) or by saving the token from step 1 to your global npm config:
+   ```bash
+   npm config set //registry.npmjs.org/:_authToken=YOUR_ACCESS_TOKEN
+   ```
+3. From this directory, build and publish:
+   ```bash
+   cd typescript
+   bun run build         # emits dist/ (prepublishOnly also runs this)
+   npm publish --access public
+   ```
+
+`--access public` is required because scoped packages default to restricted (private) on npm. The `prepublishOnly` script runs `tsc` before publish so the `dist/` is always fresh.
+
 ## v2 migration
 
 v2.0.0 is a clean rewrite. Notable changes from v1.x:
