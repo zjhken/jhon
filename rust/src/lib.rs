@@ -1,10 +1,63 @@
-use anyhow::{Result, anyhow};
 use serde::{
     de::{self, Deserialize, Deserializer},
     ser::{Serialize, Serializer},
 };
 use serde_json::Value;
 use serde_json::{Map, Number};
+use std::fmt::Write as _;
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// Errors returned by JHON parsing and (de)serialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JhonError {
+    /// A syntax error at a specific source position (1-based line, 1-based column).
+    Syntax { line: usize, col: usize, msg: String },
+    /// The input ended unexpectedly.
+    Eof { line: usize, col: usize, msg: String },
+    /// An object declared the same key more than once.
+    DuplicateKey { line: usize, col: usize, key: String },
+    /// A serde (de)serialization error wrapping the underlying message.
+    Serde(String),
+}
+
+impl std::fmt::Display for JhonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JhonError::Syntax { line, col, msg } => {
+                write!(f, "parse error at {}:{}: {}", line, col, msg)
+            }
+            JhonError::Eof { line, col, msg } => {
+                write!(f, "unexpected end of input at {}:{}: {}", line, col, msg)
+            }
+            JhonError::DuplicateKey { line, col, key } => {
+                write!(f, "duplicate key at {}:{}: {:?}", line, col, key)
+            }
+            JhonError::Serde(msg) => write!(f, "deserialization error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for JhonError {}
+
+impl From<serde_json::Error> for JhonError {
+    fn from(e: serde_json::Error) -> Self {
+        JhonError::Serde(e.to_string())
+    }
+}
+
+/// Convenience alias used throughout the crate.
+pub type Result<T> = std::result::Result<T, JhonError>;
+
+/// Build a [`JhonError::Syntax`] at the current (placeholder) position.
+/// Real line/column tracking is wired up in step 9 of the rewrite.
+macro_rules! syntax_err {
+    ($($arg:tt)*) => {
+        $crate::JhonError::Syntax { line: 0, col: 0, msg: format!($($arg)*) }
+    };
+}
 
 /// Parse a Jhon config string into a JSON Value
 ///
@@ -13,7 +66,7 @@ use serde_json::{Map, Number};
 /// ```
 /// use jhon::parse;
 ///
-/// let result = parse(r#"name="John" age=30"#).unwrap();
+/// let result = parse(r#"name="John",age=30"#).unwrap();
 /// ```
 #[inline]
 pub fn parse(text: &str) -> Result<Value> {
@@ -23,18 +76,26 @@ pub fn parse(text: &str) -> Result<Value> {
         return Ok(Value::Object(Map::new()));
     }
 
-    // Remove comments and parse
-    let input = remove_comments(input);
-    let input = input.trim();
+    // Comments are stripped inline during parsing (skip_ws_and_comments) so
+    // that line information survives for the §5.3 separator rule.
 
-    if input.is_empty() {
-        return Ok(Value::Object(Map::new()));
-    }
+    let first = input.as_bytes()[0];
 
     // Handle top-level objects wrapped in braces (from serialize)
-    if input.as_bytes()[0] == b'{' {
-        // Parse as nested object
-        let (value, _) = parse_nested_object(input, 0)?;
+    if first == b'{' {
+        let mut parser = Parser::new(input.as_bytes());
+        let (value, _) = parser.parse_nested_object()?;
+        return Ok(value);
+    }
+
+    // Top-level array — must be the entire document (no trailing content).
+    if first == b'[' {
+        let mut parser = Parser::new(input.as_bytes());
+        let (value, end) = parser.parse_array()?;
+        let trailing = &input.as_bytes()[end..];
+        if !trailing.iter().all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
+            return Err(syntax_err!("Unexpected content after top-level array"));
+        }
         return Ok(value);
     }
 
@@ -51,40 +112,13 @@ pub fn parse(text: &str) -> Result<Value> {
 ///
 /// let value = json!({"name": "John", "age": 30});
 /// let jhon_string = serialize(&value);
-/// assert_eq!(jhon_string, r#"age=30,name="John""#);
+/// assert_eq!(jhon_string, r#"name="John",age=30"#);
 /// ```
 #[inline]
 pub fn serialize(value: &Value) -> String {
-    // Estimate capacity: roughly estimate based on value size
-    let estimated_size = estimate_serialized_size(value);
-    let mut result = String::with_capacity(estimated_size);
+    let mut result = String::new();
     serialize_compact(value, &mut result);
     result
-}
-
-// Estimate the serialized size for capacity pre-allocation
-#[inline]
-fn estimate_serialized_size(value: &Value) -> usize {
-    match value {
-        Value::Object(map) => {
-            let mut size = map.len() * 8; // rough estimate per key-value pair
-            for (k, v) in map {
-                size += k.len() + estimate_serialized_size(v);
-            }
-            size
-        }
-        Value::Array(arr) => {
-            let mut size = arr.len() * 2; // brackets and commas
-            for v in arr {
-                size += estimate_serialized_size(v);
-            }
-            size
-        }
-        Value::String(s) => s.len() + 2, // quotes
-        Value::Number(_) => 16, // rough estimate
-        Value::Bool(_) => 5,
-        Value::Null => 4,
-    }
 }
 
 /// Serialize a JSON Value into a pretty-printed JHON string with custom indentation
@@ -97,7 +131,7 @@ fn estimate_serialized_size(value: &Value) -> usize {
 ///
 /// let value = json!({"name": "John", "age": 30});
 /// let jhon_string = serialize_pretty(&value, "  "); // 2-space indent
-/// assert_eq!(jhon_string, "age = 30,\nname = \"John\"");
+/// assert_eq!(jhon_string, "name = \"John\"\nage = 30");
 /// ```
 pub fn serialize_pretty(value: &Value, indent: &str) -> String {
     let mut result = String::new();
@@ -165,9 +199,10 @@ impl Jhon {
     /// # Errors
     ///
     /// Returns an error if parsing or deserialization fails.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str<'de, T: Deserialize<'de>>(s: &'de str) -> Result<T> {
         let value = parse(s)?;
-        T::deserialize(value).map_err(|e| anyhow!("Deserialization error: {}", e))
+        T::deserialize(value).map_err(|e| JhonError::Serde(e.to_string()))
     }
 
     /// Deserialize a type `T` from a JHON string with a custom deserializer.
@@ -176,7 +211,7 @@ impl Jhon {
     pub fn from_str_with_deserializer<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<T> {
-        T::deserialize(deserializer).map_err(|e| anyhow!("Deserialization error: {}", e))
+        T::deserialize(deserializer).map_err(|e| JhonError::Serde(e.to_string()))
     }
 }
 
@@ -207,14 +242,14 @@ pub mod jhon {
     pub fn serialize<T: Serialize, S: Serializer>(
         value: &T,
         serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    ) -> std::result::Result<S::Ok, S::Error> {
         let jhon_string = Jhon::to_string(value).map_err(serde::ser::Error::custom)?;
         jhon_string.serialize(serializer)
     }
 
     pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<T, D::Error> {
+    ) -> std::result::Result<T, D::Error> {
         // First deserialize to a Value (serde_json::Value), then convert to target type
         let json_value = serde_json::Value::deserialize(deserializer)?;
         // Convert the JSON Value to our target type
@@ -314,63 +349,7 @@ static ESCAPE: [u8; 256] = [
 ];
 
 // Classification table for fast character checking
-// Bits: 0x01 = whitespace, 0x02 = digit, 0x04 = identifier char, 0x08 = structural
-static CLASSIFICATION: [u8; 256] = {
-    const C: u8 = 0; // normal character
-    const W: u8 = 0x01; // whitespace
-    const D: u8 = 0x02; // digit
-    const I: u8 = 0x04; // identifier (alphanumeric, underscore, hyphen)
-    const S: u8 = 0x08; // structural (=, {, }, [, ], ", ', ',')
-    let mut table = [C; 256];
-    // Whitespace
-    table[b'\t' as usize] = W;
-    table[b'\n' as usize] = W;
-    table[b'\r' as usize] = W;
-    table[b' ' as usize] = W;
-    // Digits
-    let mut i = b'0';
-    while i <= b'9' {
-        table[i as usize] = D | I;
-        i += 1;
-    }
-    // Letters (identifier)
-    let mut i = b'a';
-    while i <= b'z' {
-        table[i as usize] = I;
-        table[(i - 32) as usize] = I; // uppercase
-        i += 1;
-    }
-    // Identifier chars
-    table[b'_' as usize] = I;
-    table[b'-' as usize] = I;
-    // Structural
-    table[b'=' as usize] = S;
-    table[b'{' as usize] = S;
-    table[b'}' as usize] = S;
-    table[b'[' as usize] = S;
-    table[b']' as usize] = S;
-    table[b'"' as usize] = S;
-    table[b'\'' as usize] = S;
-    table[b',' as usize] = S;
-    table[b'#' as usize] = S;
-    table
-};
-
-// Inline hints for hot paths
-#[inline(always)]
-fn is_whitespace(b: u8) -> bool {
-    CLASSIFICATION[b as usize] & 0x01 != 0
-}
-
-#[inline(always)]
-fn is_digit(b: u8) -> bool {
-    CLASSIFICATION[b as usize] & 0x02 != 0
-}
-
-#[inline(always)]
-fn is_identifier_char(b: u8) -> bool {
-    CLASSIFICATION[b as usize] & 0x04 != 0
-}
+// (removed during 2.0 rewrite — correctness over micro-optimization)
 
 // =============================================================================
 // Optimized Parser
@@ -380,11 +359,18 @@ fn is_identifier_char(b: u8) -> bool {
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    line: usize, // 1-based
+    col: usize,  // 1-based
 }
 
 impl<'a> Parser<'a> {
     fn new(input: &'a [u8]) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            line: 1,
+            col: 1,
+        }
     }
 
     fn current(&self) -> Option<u8> {
@@ -393,186 +379,189 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Option<u8> {
         let c = self.current()?;
+        if c == b'\n' {
+            self.line += 1;
+            self.col = 1;
+        } else {
+            self.col += 1;
+        }
         self.pos += 1;
         Some(c)
     }
 
-    fn skip_byte(&mut self, byte: u8) {
-        while self.current() == Some(byte) {
-            self.pos += 1;
-        }
-    }
-
-    // Skip all whitespace using SIMD-like byte scanning
-    fn skip_whitespace(&mut self) {
-        // Process 8 bytes at a time
-        while self.pos + 8 <= self.input.len() {
-            let chunk = u64::from_le_bytes([
-                self.input[self.pos],
-                self.input[self.pos + 1],
-                self.input[self.pos + 2],
-                self.input[self.pos + 3],
-                self.input[self.pos + 4],
-                self.input[self.pos + 5],
-                self.input[self.pos + 6],
-                self.input[self.pos + 7],
-            ]);
-
-            // Check if any byte is NOT whitespace
-            // Whitespace: space (0x20), tab (0x09), newline (0x0A), carriage return (0x0D)
-            // We use a trick: subtract 1 and check overflow to detect ranges
-            let has_non_ws = {
-                // For space (0x20): subtract 0x20, values < 0xE0 for whitespace
-                // For tab/newline/CR (0x09-0x0D): subtract 1, values < 0x0D for range 0x01-0x0D
-                // This is a simplified version - we check each byte
-                let bytes = chunk.to_le_bytes();
-                !bytes.iter().all(|&b| is_whitespace(b))
-            };
-
-            if has_non_ws {
-                break;
+    /// Skip whitespace and comments. Returns whether a newline was consumed.
+    /// Comments are stripped inline so that line information survives for
+    /// separator-rule enforcement (SPEC.md §5.3).
+    fn skip_ws_and_comments(&mut self) -> bool {
+        let mut saw_newline = false;
+        loop {
+            match self.current() {
+                Some(b' ') | Some(b'\t') | Some(b'\r') => {
+                    self.advance();
+                }
+                Some(b'\n') => {
+                    saw_newline = true;
+                    self.advance();
+                }
+                Some(b'/') if self.input.get(self.pos + 1) == Some(&b'/') => {
+                    // Line comment — skip to but not past '\n' so the outer
+                    // loop records the newline.
+                    self.advance();
+                    self.advance();
+                    while let Some(c) = self.current() {
+                        if c == b'\n' {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                Some(b'/') if self.input.get(self.pos + 1) == Some(&b'*') => {
+                    // Block comment — skip to matching '*/'. Newlines inside
+                    // count toward the separator rule.
+                    self.advance();
+                    self.advance();
+                    loop {
+                        match self.current() {
+                            None => return saw_newline,
+                            Some(b'*') if self.input.get(self.pos + 1) == Some(&b'/') => {
+                                self.advance();
+                                self.advance();
+                                break;
+                            }
+                            Some(b'\n') => {
+                                saw_newline = true;
+                                self.advance();
+                            }
+                            Some(_) => {
+                                self.advance();
+                            }
+                        }
+                    }
+                }
+                _ => break,
             }
-            self.pos += 8;
         }
-
-        // Handle remaining bytes
-        while self.pos < self.input.len() && is_whitespace(self.input[self.pos]) {
-            self.pos += 1;
-        }
+        saw_newline
     }
 
-    fn skip_spaces_and_tabs(&mut self) {
-        while self.pos < self.input.len() {
-            let b = self.input[self.pos];
-            if b == b' ' || b == b'\t' {
-                self.pos += 1;
-            } else {
-                break;
+    /// Skip the separator between two consecutive items in a container.
+    /// Returns `(saw_newline, saw_comma)`. Per SPEC.md §5.3, an item following
+    /// another on the same physical line must be preceded by a comma; a
+    /// newline is also a valid separator.
+    fn skip_inter_item_separator(&mut self) -> (bool, bool) {
+        let mut saw_newline = self.skip_ws_and_comments();
+        let mut saw_comma = false;
+        if self.current() == Some(b',') {
+            saw_comma = true;
+            self.advance();
+            if self.skip_ws_and_comments() {
+                saw_newline = true;
             }
         }
+        (saw_newline, saw_comma)
     }
 
-    // Optimized string parsing with fast byte scanning
+    // String parsing. Phase 1 scans byte-by-byte for the closing quote while
+    // rejecting literal C0/DEL control chars; if no escape is seen the slice
+    // is returned directly. Phase 2 processes escapes, accumulating into a
+    // Vec<u8> so non-ASCII content after an escape stays UTF-8-correct.
     fn parse_string(&mut self, quote: u8) -> Result<String> {
         self.advance(); // skip opening quote
 
         let start = self.pos;
 
-        // Fast path: scan for quote or escape using byte chunks
-        while self.pos + 8 <= self.input.len() {
-            let chunk = u64::from_le_bytes([
-                self.input[self.pos],
-                self.input[self.pos + 1],
-                self.input[self.pos + 2],
-                self.input[self.pos + 3],
-                self.input[self.pos + 4],
-                self.input[self.pos + 5],
-                self.input[self.pos + 6],
-                self.input[self.pos + 7],
-            ]);
-
-            // Check for quote or backslash in chunk
-            // We use XOR to find bytes matching quote or backslash
-            let diff_quote = chunk ^ u64::from_le_bytes([quote; 8]);
-            let diff_bs = chunk ^ u64::from_le_bytes([b'\\'; 8]);
-
-            // If either has a zero byte, we found a match
-            if (diff_quote.wrapping_sub(0x0101010101010101) & !diff_quote & 0x8080808080808080) != 0
-                || (diff_bs.wrapping_sub(0x0101010101010101) & !diff_bs & 0x8080808080808080) != 0
-            {
-                // Found quote or escape, check byte by byte
-                let end = self.pos + 8;
-                while self.pos < end {
-                    let b = self.input[self.pos];
-                    if b == quote {
-                        let s = unsafe {
-                            std::str::from_utf8_unchecked(&self.input[start..self.pos])
-                        };
-                        self.pos += 1;
-                        return Ok(s.to_string());
-                    }
-                    if b == b'\\' {
-                        break;
-                    }
-                    self.pos += 1;
-                }
-                if self.input[self.pos] == b'\\' {
-                    break;
-                }
-            }
-            self.pos += 8;
-        }
-
-        // Handle remaining bytes byte-by-byte
-        let mut has_escape = false;
+        // Phase 1: scan for closing quote, backslash, or forbidden control byte.
         while self.pos < self.input.len() {
             let b = self.input[self.pos];
+            if b < 0x20 || b == 0x7F {
+                return Err(syntax_err!(
+                    "literal control character 0x{:02X} in string; use an escape or a raw string",
+                    b
+                ));
+            }
             if b == quote {
                 let s = std::str::from_utf8(&self.input[start..self.pos])
-                    .map_err(|_| anyhow!("Invalid UTF-8 in string"))?;
+                    .map_err(|_| syntax_err!("Invalid UTF-8 in string"))?;
                 self.pos += 1;
                 return Ok(s.to_string());
             }
             if b == b'\\' {
-                has_escape = true;
                 break;
             }
             self.pos += 1;
         }
 
-        if !has_escape {
-            return Err(anyhow!("Unterminated string"));
+        if self.pos >= self.input.len() {
+            return Err(syntax_err!("Unterminated string"));
         }
 
-        // Slow path: handle escapes
-        let mut result = String::from_utf8_lossy(&self.input[start..self.pos]).into_owned();
+        // Phase 2: process escapes.
+        let mut bytes: Vec<u8> = self.input[start..self.pos].to_vec();
+
         while self.pos < self.input.len() {
-            let b = self.advance().ok_or_else(|| anyhow!("Unterminated string"))?;
+            let b = self
+                .advance()
+                .ok_or_else(|| syntax_err!("Unterminated string"))?;
             if b == quote {
-                return Ok(result);
+                return String::from_utf8(bytes)
+                    .map_err(|_| syntax_err!("Invalid UTF-8 in string"));
             }
             if b == b'\\' {
-                let escaped = self.advance().ok_or_else(|| anyhow!("Incomplete escape sequence"))?;
-                result.push(match escaped {
-                    b'n' => '\n',
-                    b'r' => '\r',
-                    b't' => '\t',
-                    b'b' => '\u{08}',
-                    b'f' => '\u{0c}',
-                    b'\\' => '\\',
-                    b'"' | b'\'' => escaped as char,
-                    b'u' => {
-                        // Parse 4 hex digits - optimized hex parsing
-                        let mut code = 0u16;
-                        for _ in 0..4 {
-                            let h = self.advance().ok_or_else(|| anyhow!("Incomplete Unicode escape"))?;
-                            let digit = h.wrapping_sub(b'0');
-                            let digit = if digit <= 9 {
-                                digit
-                            } else {
-                                let h = h.wrapping_sub(b'a');
-                                if h <= 5 {
-                                    h + 10
-                                } else {
-                                    let h = h.wrapping_sub(b'A');
-                                    if h <= 5 {
-                                        h + 10
-                                    } else {
-                                        return Err(anyhow!("Invalid Unicode escape"));
-                                    }
-                                }
-                            };
-                            code = (code << 4) | digit as u16;
-                        }
-                        char::from_u32(code as u32).ok_or_else(|| anyhow!("Invalid Unicode code point"))?
+                let escaped = self
+                    .advance()
+                    .ok_or_else(|| syntax_err!("Incomplete escape sequence"))?;
+                match escaped {
+                    b'n' => bytes.push(b'\n'),
+                    b'r' => bytes.push(b'\r'),
+                    b't' => bytes.push(b'\t'),
+                    b'b' => bytes.push(0x08),
+                    b'f' => bytes.push(0x0C),
+                    b'\\' => bytes.push(b'\\'),
+                    b'"' => bytes.push(b'"'),
+                    b'\'' => bytes.push(b'\''),
+                    b'/' => bytes.push(b'/'),
+                    b'x' => {
+                        let v = self.parse_hex_digits(2, "\\x")?;
+                        bytes.push(v as u8);
                     }
-                    _ => escaped as char,
-                });
+                    b'u' => {
+                        let code = self.parse_hex_digits(4, "\\u")?;
+                        if (0xD800..=0xDFFF).contains(&code) {
+                            return Err(syntax_err!(
+                                "surrogate code point U+{:04X} requires a pair; \
+                                 surrogate handling is not yet implemented",
+                                code
+                            ));
+                        }
+                        let c = char::from_u32(code)
+                            .ok_or_else(|| syntax_err!("Invalid Unicode code point U+{:04X}", code))?;
+                        let mut buf = [0u8; 4];
+                        bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                    }
+                    other => {
+                        return Err(syntax_err!("Unknown escape \\{}", other as char));
+                    }
+                }
             } else {
-                result.push(b as char);
+                bytes.push(b);
             }
         }
-        Err(anyhow!("Unterminated string"))
+        Err(syntax_err!("Unterminated string"))
+    }
+
+    /// Parse `count` hex digits and return the assembled value.
+    fn parse_hex_digits(&mut self, count: usize, label: &str) -> Result<u32> {
+        let mut value = 0u32;
+        for _ in 0..count {
+            let h = self
+                .advance()
+                .ok_or_else(|| syntax_err!("Incomplete {} escape", label))?;
+            let d = (h as char)
+                .to_digit(16)
+                .ok_or_else(|| syntax_err!("Invalid hex digit in {} escape", label))?;
+            value = (value << 4) | d;
+        }
+        Ok(value)
     }
 
     fn parse_raw_string(&mut self) -> Result<String> {
@@ -585,268 +574,330 @@ impl<'a> Parser<'a> {
         }
 
         if self.current() != Some(b'"') {
-            return Err(anyhow!("Expected opening quote after r and # symbols in raw string"));
+            return Err(syntax_err!("Expected opening quote after r and # symbols in raw string"));
         }
         self.advance(); // skip opening quote
 
         let start = self.pos;
 
         while self.pos < self.input.len() {
-            if self.input[self.pos] == b'"' {
-                if self.pos + hash_count < self.input.len() {
+            if self.input[self.pos] == b'"'
+                && self.pos + hash_count < self.input.len() {
                     let is_closing = (1..=hash_count).all(|j| {
                         self.input.get(self.pos + j) == Some(&b'#')
                     });
 
                     if is_closing {
                         let s = std::str::from_utf8(&self.input[start..self.pos])
-                            .map_err(|_| anyhow!("Invalid UTF-8 in raw string"))?
+                            .map_err(|_| syntax_err!("Invalid UTF-8 in raw string"))?
                             .to_string();
                         self.pos += hash_count + 1;
                         return Ok(s);
                     }
                 }
-            }
             self.pos += 1;
         }
 
-        Err(anyhow!("Unterminated raw string"))
+        Err(syntax_err!("Unterminated raw string"))
     }
 
-    // Optimized number parsing - avoids intermediate string allocation
+    // Number parser — handles decimal, hex, octal, binary, floats, and
+    // underscores per SPEC.md §3.5.
     fn parse_number(&mut self) -> Result<Value> {
-        let start = self.pos;
-        let sign = if self.current() == Some(b'-') {
+        let negative = self.current() == Some(b'-');
+        if negative {
             self.advance();
-            -1i64
+        }
+
+        // Radix prefix detection. Lowercase only — uppercase variants error.
+        let radix = if self.pos + 1 < self.input.len() && self.input[self.pos] == b'0' {
+            match self.input[self.pos + 1] {
+                b'x' => Some(16u32),
+                b'o' => Some(8u32),
+                b'b' => Some(2u32),
+                b'X' | b'O' | b'B' => {
+                    return Err(syntax_err!(
+                        "uppercase radix prefix 0{} not allowed; use lowercase",
+                        self.input[self.pos + 1] as char
+                    ));
+                }
+                _ => None,
+            }
         } else {
-            1i64
+            None
         };
 
-        // Parse integer part directly
-        let mut value: u64 = 0;
-        let mut has_digits = false;
+        // Scan the literal.
+        let literal: String;
+        let mut is_float = false;
 
-        while self.pos < self.input.len() {
-            let b = self.input[self.pos];
-            if is_digit(b) {
-                // Check for overflow
-                if value > (u64::MAX / 10) {
-                    // Too large, fall back to string parsing
-                    return self.parse_number_slow(start);
-                }
-                value = value.wrapping_mul(10).wrapping_add((b - b'0') as u64);
-                self.pos += 1;
-                has_digits = true;
-            } else if b == b'_' {
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
-
-        if !has_digits {
-            return Err(anyhow!("Invalid number"));
-        }
-
-        // Check for decimal point
-        if self.current() == Some(b'.') {
-            // Need to parse as float - use string parsing for accuracy
-            return self.parse_number_slow(start);
-        }
-
-        // Apply sign
-        let value = if sign < 0 {
-            value.wrapping_neg()
+        if let Some(rdx) = radix {
+            self.advance(); // '0'
+            self.advance(); // 'x' / 'o' / 'b'
+            literal = self.scan_radix_digits(rdx)?;
         } else {
-            value
-        } as i64;
+            let int_part = self.scan_dec_digits()?;
+            let mut s = int_part;
+            if self.current() == Some(b'.') {
+                is_float = true;
+                s.push('.');
+                self.advance();
+                s.push_str(&self.scan_dec_digits()?);
+            }
+            if matches!(self.current(), Some(b'e') | Some(b'E')) {
+                is_float = true;
+                s.push('e');
+                self.advance();
+                if matches!(self.current(), Some(b'+') | Some(b'-')) {
+                    s.push(self.current().unwrap() as char);
+                    self.advance();
+                }
+                s.push_str(&self.scan_dec_digits()?);
+            }
+            literal = s;
+        }
 
-        Ok(Value::Number(Number::from(value)))
+        // Reject type suffixes (u8, i32, f64, ...) — next byte looks like u/i/f
+        // followed by alphanumeric.
+        if let Some(b) = self.current()
+            && matches!(b, b'u' | b'i' | b'f')
+                && self.input.get(self.pos + 1).copied().filter(|c| c.is_ascii_alphanumeric()).is_some() {
+                    return Err(syntax_err!(
+                        "number type suffix not allowed (saw '{}{}')",
+                        b as char,
+                        self.input[self.pos + 1] as char
+                    ));
+                }
+
+        // Assemble signed form for parsing.
+        let signed = if negative {
+            format!("-{}", literal)
+        } else {
+            literal
+        };
+
+        if let Some(rdx) = radix {
+            return parse_radix_literal(&signed, rdx);
+        }
+
+        if !is_float {
+            if let Ok(i) = signed.parse::<i64>() {
+                return Ok(Value::Number(Number::from(i)));
+            }
+            if let Ok(u) = signed.parse::<u64>() {
+                return Ok(Value::Number(Number::from(u)));
+            }
+            if let Ok(i) = signed.parse::<i128>()
+                && let Some(n) = Number::from_f64(i as f64) {
+                    return Ok(Value::Number(n));
+                }
+            if let Ok(u) = signed.parse::<u128>()
+                && let Some(n) = Number::from_f64(u as f64) {
+                    return Ok(Value::Number(n));
+                }
+        }
+
+        let f = signed
+            .parse::<f64>()
+            .map_err(|_| syntax_err!("could not parse number: {}", signed))?;
+        Number::from_f64(f)
+            .map(Value::Number)
+            .ok_or_else(|| syntax_err!("invalid number value: {}", signed))
     }
 
-    // Fallback: parse number using string (for floats or overflow cases)
-    fn parse_number_slow(&mut self, start: usize) -> Result<Value> {
-        // Continue parsing to end of number
-        let mut has_digits = false;
-
+    /// Scan a run of decimal digits with Rust-style underscore separators.
+    /// Validates that underscores occur only between two digits.
+    fn scan_dec_digits(&mut self) -> Result<String> {
+        let mut s = String::new();
+        let mut last_was_under = false;
+        let mut has_digit = false;
         while self.pos < self.input.len() {
             let b = self.input[self.pos];
-            if is_digit(b) {
-                has_digits = true;
+            if b.is_ascii_digit() {
+                s.push(b as char);
+                last_was_under = false;
+                has_digit = true;
                 self.pos += 1;
-            } else if b == b'_' || b == b'.' || b == b'e' || b == b'E' || b == b'+' || b == b'-' {
+            } else if b == b'_' {
+                if !has_digit || last_was_under {
+                    return Err(syntax_err!("invalid underscore placement in number"));
+                }
+                last_was_under = true;
                 self.pos += 1;
             } else {
                 break;
             }
         }
-
-        if !has_digits {
-            return Err(anyhow!("Invalid number"));
+        if !has_digit {
+            return Err(syntax_err!("number requires at least one digit"));
         }
-
-        // Parse the number without underscores
-        let num_str: String = self.input[start..self.pos]
-            .iter()
-            .filter(|&&b| b != b'_')
-            .map(|&b| b as char)
-            .collect();
-
-        // Try parsing as integer first
-        if let Ok(i) = num_str.parse::<i64>() {
-            return Ok(Value::Number(Number::from(i)));
+        if last_was_under {
+            return Err(syntax_err!("number cannot end with underscore"));
         }
+        Ok(s)
+    }
 
-        // Try as float
-        let f = num_str.parse::<f64>()
-            .map_err(|_| anyhow!("Could not parse number"))?;
-        Number::from_f64(f).map(Value::Number).ok_or_else(|| anyhow!("Invalid number value"))
+    /// Scan a run of digits in the given radix with underscore separators.
+    fn scan_radix_digits(&mut self, radix: u32) -> Result<String> {
+        let mut s = String::new();
+        let mut last_was_under = false;
+        let mut has_digit = false;
+        while self.pos < self.input.len() {
+            let b = self.input[self.pos];
+            if (b as char).is_digit(radix) {
+                s.push(b as char);
+                last_was_under = false;
+                has_digit = true;
+                self.pos += 1;
+            } else if b == b'_' {
+                if !has_digit || last_was_under {
+                    return Err(syntax_err!("invalid underscore placement in number"));
+                }
+                last_was_under = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if !has_digit {
+            return Err(syntax_err!("number requires at least one digit after radix prefix"));
+        }
+        if last_was_under {
+            return Err(syntax_err!("number cannot end with underscore"));
+        }
+        Ok(s)
     }
 
     fn parse_array(&mut self) -> Result<(Value, usize)> {
         self.advance(); // skip '['
 
-        // Estimate capacity by counting commas in array
-        let start = self.pos;
-        let mut depth = 1usize;
-        let end = loop {
-            if self.pos >= self.input.len() {
-                return Err(anyhow!("Unterminated array"));
-            }
-            match self.input[self.pos] {
-                b'[' => depth += 1,
-                b']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break self.pos;
-                    }
-                }
-                _ => {}
-            }
-            self.pos += 1;
-        };
-        let estimated_elements = self.input[start..end].iter().filter(|&&b| b == b',').count() + 1;
-        self.pos = start;
+        let mut elements = Vec::new();
 
-        let mut elements = Vec::with_capacity(estimated_elements);
-
-        self.skip_spaces_and_tabs();
+        self.skip_ws_and_comments();
 
         while self.current() != Some(b']') {
+            if self.current().is_none() {
+                return Err(syntax_err!("Unterminated array"));
+            }
+
             if let Some(value) = self.parse_value()? {
                 elements.push(value);
             }
 
-            // Skip separators
-            self.skip_byte(b'\n');
-            self.skip_byte(b',');
+            // Skip separator between items. Per §5.3, an item that follows
+            // another on the same physical line must be preceded by a comma.
+            let (saw_newline, saw_comma) = self.skip_inter_item_separator();
 
-            self.skip_spaces_and_tabs();
-
-            if self.pos >= self.input.len() {
-                return Err(anyhow!("Unterminated array"));
+            if self.current() == Some(b']') {
+                break;
+            }
+            if self.current().is_none() {
+                return Err(syntax_err!("Unterminated array"));
+            }
+            if !saw_newline && !saw_comma {
+                return Err(syntax_err!(
+                    "items on the same line must be separated by a comma"
+                ));
             }
         }
 
-        self.pos += 1; // skip ']'
+        self.advance(); // skip ']'
         Ok((Value::Array(elements), self.pos))
     }
 
     fn parse_nested_object(&mut self) -> Result<(Value, usize)> {
         self.advance(); // skip '{'
 
-        // Estimate capacity by counting '=' in object
-        let start = self.pos;
-        let mut depth = 1usize;
-        let end = loop {
-            if self.pos >= self.input.len() {
-                return Err(anyhow!("Unterminated nested object"));
-            }
-            match self.input[self.pos] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break self.pos;
-                    }
-                }
-                _ => {}
-            }
-            self.pos += 1;
-        };
-        let estimated_pairs = self.input[start..end].iter().filter(|&&b| b == b'=').count();
-        self.pos = start;
+        let mut map = Map::new();
 
-        let mut map = Map::with_capacity(estimated_pairs.max(1));
-
-        self.skip_spaces_and_tabs();
+        self.skip_ws_and_comments();
 
         while self.current() != Some(b'}') {
+            if self.current().is_none() {
+                return Err(syntax_err!("Unterminated nested object"));
+            }
+
             // Parse key
             let key = self.parse_key()?;
 
-            // Skip whitespace before =
-            self.skip_whitespace();
+            // Skip whitespace/comments before '='
+            self.skip_ws_and_comments();
 
-            // Expect =
+            // Expect '='
             if self.current() != Some(b'=') {
-                return Err(anyhow!("Expected '=' after key in nested object"));
+                return Err(syntax_err!("Expected '=' after key in nested object"));
             }
-            self.pos += 1;
+            self.advance();
 
-            // Skip whitespace before value
-            self.skip_whitespace();
+            // Skip whitespace/comments before value
+            self.skip_ws_and_comments();
 
             // Parse value
             if let Some(value) = self.parse_value()? {
+                if map.contains_key(&key) {
+                    return Err(JhonError::DuplicateKey {
+                        line: self.line,
+                        col: self.col,
+                        key,
+                    });
+                }
                 map.insert(key, value);
             }
 
-            // Skip separators
-            self.skip_byte(b'\n');
-            self.skip_byte(b',');
+            // Skip separator between pairs.
+            let (saw_newline, saw_comma) = self.skip_inter_item_separator();
 
-            self.skip_spaces_and_tabs();
-
-            if self.pos >= self.input.len() {
-                return Err(anyhow!("Unterminated nested object"));
+            if self.current() == Some(b'}') {
+                break;
+            }
+            if self.current().is_none() {
+                return Err(syntax_err!("Unterminated nested object"));
+            }
+            if !saw_newline && !saw_comma {
+                return Err(syntax_err!(
+                    "items on the same line must be separated by a comma"
+                ));
             }
         }
 
-        self.pos += 1; // skip '}'
+        self.advance(); // skip '}'
         Ok((Value::Object(map), self.pos))
     }
 
     fn parse_key(&mut self) -> Result<String> {
-        self.skip_whitespace();
+        self.skip_ws_and_comments();
 
         let quote = self.current();
 
         if quote == Some(b'"') || quote == Some(b'\'') {
             self.parse_string(quote.unwrap())
         } else {
-            // Unquoted key - use optimized identifier char check
+            // Bare key — permissive: scan bytes until we hit one in the
+            // exclusion list (per SPEC.md §3.3). All excluded bytes are ASCII,
+            // so UTF-8 multi-byte sequences pass through untouched.
             let start = self.pos;
-            while self.pos < self.input.len() && is_identifier_char(self.input[self.pos]) {
+            while self.pos < self.input.len() {
+                let b = self.input[self.pos];
+                if is_key_delimiter(b) {
+                    break;
+                }
                 self.pos += 1;
             }
 
             if start == self.pos {
-                return Err(anyhow!("Empty key"));
+                return Err(syntax_err!("Empty key"));
             }
 
-            unsafe {
-                // Safety: we verified all characters are ASCII alphanumeric/underscore/hyphen
-                Ok(std::str::from_utf8_unchecked(&self.input[start..self.pos]).to_string())
-            }
+            let s = std::str::from_utf8(&self.input[start..self.pos])
+                .map_err(|_| syntax_err!("Invalid UTF-8 in bare key"))?;
+            Ok(s.to_string())
         }
     }
 
     fn parse_value(&mut self) -> Result<Option<Value>> {
-        self.skip_whitespace();
+        self.skip_ws_and_comments();
 
-        let c = self.current().ok_or_else(|| anyhow!("Expected value"))?;
+        let c = self.current().ok_or_else(|| syntax_err!("Expected value"))?;
 
         let result = match c {
             b'"' | b'\'' => Some(Value::String(self.parse_string(c)?)),
@@ -856,7 +907,7 @@ impl<'a> Parser<'a> {
             b'0'..=b'9' | b'-' => Some(self.parse_number()?),
             b't' | b'f' => Some(self.parse_boolean()?),
             b'n' => Some(self.parse_null()?),
-            _ => return Err(anyhow!("Unexpected character in value: {}", c as char)),
+            _ => return Err(syntax_err!("Unexpected character in value: {}", c as char)),
         };
 
         Ok(result)
@@ -872,7 +923,7 @@ impl<'a> Parser<'a> {
             self.pos += 5;
             return Ok(Value::Bool(false));
         }
-        Err(anyhow!("Invalid boolean value"))
+        Err(syntax_err!("Invalid boolean value"))
     }
 
     fn parse_null(&mut self) -> Result<Value> {
@@ -881,129 +932,83 @@ impl<'a> Parser<'a> {
             self.pos += 4;
             return Ok(Value::Null);
         }
-        Err(anyhow!("Invalid null value"))
+        Err(syntax_err!("Invalid null value"))
     }
 }
 
-// Optimized comment removal using SIMD-like byte scanning
+
 #[inline]
-fn remove_comments(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-
-    // Fast path: check if there are any comments at all
-    let has_slash = bytes.iter().any(|&b| b == b'/');
-    if !has_slash {
-        return input.to_string();
+/// Parse a signed radix literal into a JSON number. Tries i64 → u64 → i128 →
+/// u128 → falls back to f64 (the i128/u128 intermediates lose precision past
+/// 2^53 when stored in serde_json::Number).
+fn parse_radix_literal(signed: &str, radix: u32) -> Result<Value> {
+    if let Ok(i) = i64::from_str_radix(signed, radix) {
+        return Ok(Value::Number(Number::from(i)));
     }
-
-    let mut result = Vec::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        // Process 8 bytes at a time looking for '/'
-        while i + 8 < len {
-            let chunk = u64::from_le_bytes([
-                bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3],
-                bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7],
-            ]);
-
-            // Check for '/' in chunk
-            let diff = chunk ^ u64::from_le_bytes([b'/'; 8]);
-            if (diff.wrapping_sub(0x0101010101010101) & !diff & 0x8080808080808080) != 0 {
-                // Found '/', check byte by byte
-                break;
-            }
-
-            // No '/', copy whole chunk
-            result.extend_from_slice(&bytes[i..i + 8]);
-            i += 8;
-        }
-
-        if i >= len {
-            break;
-        }
-
-        // Check for comment start
-        if bytes[i] == b'/' && i + 1 < len {
-            if bytes[i + 1] == b'/' {
-                // Single line comment: skip to newline
-                i += 2;
-                while i < len && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                continue;
-            } else if bytes[i + 1] == b'*' {
-                // Multi-line comment: skip to */
-                i += 2;
-                while i < len {
-                    // Fast search for '*'
-                    if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-        }
-
-        result.push(bytes[i]);
-        i += 1;
+    if let Ok(u) = u64::from_str_radix(signed, radix) {
+        return Ok(Value::Number(Number::from(u)));
     }
-
-    unsafe { String::from_utf8_unchecked(result) }
+    if let Ok(i) = i128::from_str_radix(signed, radix)
+        && let Some(n) = Number::from_f64(i as f64) {
+            return Ok(Value::Number(n));
+        }
+    if let Ok(u) = u128::from_str_radix(signed, radix)
+        && let Some(n) = Number::from_f64(u as f64) {
+            return Ok(Value::Number(n));
+        }
+    Err(syntax_err!("could not parse number: {}", signed))
 }
 
-#[inline]
 fn parse_jhon_object(input: &str) -> Result<Value> {
     let mut parser = Parser::new(input.as_bytes());
+    let mut map = Map::new();
 
-    // Estimate number of key-value pairs for capacity pre-allocation
-    // Count '=' characters to estimate pairs
-    let estimated_pairs = input.as_bytes().iter().filter(|&&b| b == b'=').count();
-    let mut map = Map::with_capacity(estimated_pairs.max(1));
-
-    parser.skip_spaces_and_tabs();
+    parser.skip_ws_and_comments();
 
     while parser.pos < parser.input.len() {
         // Parse key
         let key = parser.parse_key()?;
 
-        // Skip whitespace before =
-        parser.skip_whitespace();
+        // Skip whitespace/comments before '='
+        parser.skip_ws_and_comments();
 
-        // Expect =
+        // Expect '='
         if parser.current() != Some(b'=') {
-            return Err(anyhow!("Expected '=' after key"));
+            return Err(syntax_err!("Expected '=' after key"));
         }
-        parser.pos += 1;
+        parser.advance();
 
-        // Skip whitespace before value
-        parser.skip_whitespace();
+        // Skip whitespace/comments before value
+        parser.skip_ws_and_comments();
 
         // Parse value
         if let Some(value) = parser.parse_value()? {
+            if map.contains_key(&key) {
+                return Err(JhonError::DuplicateKey {
+                    line: parser.line,
+                    col: parser.col,
+                    key,
+                });
+            }
             map.insert(key, value);
         }
 
-        // Skip separators after value
-        parser.skip_byte(b'\n');
-        parser.skip_byte(b',');
+        // Skip separator between pairs.
+        let (saw_newline, saw_comma) = parser.skip_inter_item_separator();
 
-        parser.skip_spaces_and_tabs();
+        if parser.pos >= parser.input.len() {
+            break; // trailing separator at EOF is OK
+        }
+        if !saw_newline && !saw_comma {
+            return Err(syntax_err!(
+                "items on the same line must be separated by a comma"
+            ));
+        }
     }
 
     Ok(Value::Object(map))
 }
 
-fn parse_nested_object(input: &str, start_pos: usize) -> Result<(Value, usize)> {
-    let mut parser = Parser::new(input.as_bytes());
-    parser.pos = start_pos;
-
-    let (value, end) = parser.parse_nested_object()?;
-    Ok((value, end))
-}
 
 // =============================================================================
 // Optimized Serializer
@@ -1025,12 +1030,8 @@ fn serialize_compact(value: &Value, result: &mut String) {
 
 #[inline(always)]
 fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
-    // Collect and sort keys
-    let mut keys: Vec<&String> = map.keys().collect();
-    keys.sort();
-
     let mut first = true;
-    for key in keys {
+    for (key, value) in map {
         if !first {
             result.push(',');
         }
@@ -1039,7 +1040,6 @@ fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
         serialize_key(key, result);
         result.push('=');
 
-        let value = &map[key];
         match value {
             Value::Object(inner) if inner.is_empty() => result.push_str("{}"),
             Value::Object(inner) => {
@@ -1160,25 +1160,21 @@ fn serialize_escape_byte(byte: u8, result: &mut String) {
     }
 }
 
-// Optimized number serialization using itoa and ryu
+// Number serialization — uses std formatting (itoa/ryu dropped for simplicity).
 #[inline(always)]
 fn serialize_number(n: &Number, result: &mut String) {
     if let Some(i) = n.as_i64() {
-        let mut buffer = itoa::Buffer::new();
-        result.push_str(buffer.format(i));
+        let _ = write!(result, "{}", i);
     } else if let Some(u) = n.as_u64() {
-        let mut buffer = itoa::Buffer::new();
-        result.push_str(buffer.format(u));
+        let _ = write!(result, "{}", u);
     } else if let Some(f) = n.as_f64() {
         if f.fract() == 0.0 {
-            let mut buffer = itoa::Buffer::new();
-            result.push_str(buffer.format(f as i64));
+            let _ = write!(result, "{}", f as i64);
         } else {
-            let mut buffer = ryu::Buffer::new();
-            result.push_str(buffer.format_finite(f));
+            let _ = write!(result, "{}", f);
         }
     } else {
-        result.push_str("0");
+        result.push('0');
     }
 }
 
@@ -1212,10 +1208,6 @@ fn serialize_object_pretty(
     in_array: bool,
     result: &mut String,
 ) {
-    // Collect and sort keys
-    let mut keys: Vec<&String> = map.keys().collect();
-    keys.sort();
-
     // Add opening brace if nested
     if in_array {
         for _ in 0..depth + 1 {
@@ -1227,9 +1219,9 @@ fn serialize_object_pretty(
     }
 
     let mut first = true;
-    for key in keys {
+    for (key, value) in map {
         if !first {
-            result.push_str(",\n");
+            result.push('\n');
         }
         first = false;
 
@@ -1248,7 +1240,6 @@ fn serialize_object_pretty(
         serialize_key(key, result);
         result.push_str(" = ");
 
-        let value = &map[key];
         serialize_pretty_with_depth(value, indent, depth + 1, false, result);
     }
 
@@ -1274,7 +1265,7 @@ fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize, result: &mu
     let mut first = true;
     for value in arr {
         if !first {
-            result.push_str(",\n");
+            result.push('\n');
         }
         first = false;
 
@@ -1299,9 +1290,20 @@ fn needs_quoting(s: &str) -> bool {
     if s.is_empty() {
         return true;
     }
-    // Return true if key NEEDS quoting (has special chars)
-    // Return false if key is simple (alphanumeric, underscore, hyphen)
-    !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    // Quote iff the key contains a byte that would terminate a bare key.
+    s.bytes().any(is_key_delimiter)
+}
+
+/// Returns true for any byte that terminates a bare key (SPEC.md §3.3).
+/// All such bytes are ASCII, so UTF-8 continuation/lead bytes never match.
+fn is_key_delimiter(b: u8) -> bool {
+    matches!(
+        b,
+        b' ' | b'\t' | b'\n' | b'\r' |
+        b'=' | b',' |
+        b'{' | b'}' | b'[' | b']' |
+        b'/' | b'"' | b'\'' | b'#'
+    )
 }
 
 // =============================================================================
@@ -1313,252 +1315,630 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // =========================================================================
+    // §2 — Document Form
+    // =========================================================================
+
     #[test]
-    fn test_empty_input() {
-        let result = parse("").unwrap();
-        assert_eq!(result, json!({}));
+    fn empty_input_parses_to_empty_object() {
+        assert_eq!(parse("").unwrap(), json!({}));
     }
 
     #[test]
-    fn test_basic_key_value() {
-        let result = parse(r#"a="hello", b=123.45"#).unwrap();
+    fn whitespace_only_input_parses_to_empty_object() {
+        assert_eq!(parse("   \n\t\r\n  ").unwrap(), json!({}));
+    }
+
+    #[test]
+    fn comments_only_input_parses_to_empty_object() {
+        assert_eq!(parse("// just a comment\n/* block */").unwrap(), json!({}));
+    }
+
+    #[test]
+    fn top_level_object_without_braces() {
         assert_eq!(
-            result,
-            json!({
-                "a": "hello",
-                "b": 123.45
-            })
+            parse(r#"name="x",port=80"#).unwrap(),
+            json!({"name": "x", "port": 80})
         );
     }
 
     #[test]
-    fn test_string_types() {
-        let result = parse(r#""quoted key"="value", unquoted_key="another""#).unwrap();
+    fn top_level_object_with_braces() {
         assert_eq!(
-            result,
-            json!({
-                "quoted key": "value",
-                "unquoted_key": "another"
-            })
+            parse(r#"{name="x",port=80}"#).unwrap(),
+            json!({"name": "x", "port": 80})
         );
     }
 
     #[test]
-    fn test_numbers() {
-        let result = parse(r#"int=42, float=3.14, negative=-123, negative_float=-45.67"#).unwrap();
+    fn top_level_array_alone() {
+        assert_eq!(parse("[1, 2, 3]").unwrap(), json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn top_level_scalar_number_is_error() {
+        assert!(parse("42").is_err());
+    }
+
+    #[test]
+    fn top_level_scalar_string_is_error() {
+        assert!(parse(r#""hello""#).is_err());
+    }
+
+    #[test]
+    fn top_level_scalar_boolean_is_error() {
+        assert!(parse("true").is_err());
+    }
+
+    #[test]
+    fn top_level_scalar_null_is_error() {
+        assert!(parse("null").is_err());
+    }
+
+    #[test]
+    fn top_level_array_followed_by_pairs_is_error() {
+        assert!(parse("[1, 2] key=value").is_err());
+    }
+
+    // =========================================================================
+    // §3.2 — Comments
+    // =========================================================================
+
+    #[test]
+    fn single_line_comment_trailing() {
         assert_eq!(
-            result,
-            json!({
-                "int": 42,
-                "float": 3.14,
-                "negative": -123,
-                "negative_float": -45.67
-            })
+            parse(r#"key="value" // trailing comment"#).unwrap(),
+            json!({"key": "value"})
         );
     }
 
     #[test]
-    fn test_numbers_with_underscores() {
-        let result = parse(
-            r#"large=100_000, million=1_000_000, decimal=1_234.567_890, neg_large=-50_000"#,
-        )
-        .unwrap();
+    fn block_comment_inline() {
         assert_eq!(
-            result,
-            json!({
-                "large": 100_000,
-                "million": 1_000_000,
-                "decimal": 1_234.567_890,
-                "neg_large": -50_000
-            })
+            parse(r#"key=/* inline */"value""#).unwrap(),
+            json!({"key": "value"})
         );
     }
 
     #[test]
-    fn test_booleans() {
-        let result = parse(r#"truth=true, falsehood=false"#).unwrap();
+    fn block_comment_spanning_lines() {
         assert_eq!(
-            result,
-            json!({
-                "truth": true,
-                "falsehood": false
-            })
+            parse("key=/* multi\nline\ncomment */\"value\"").unwrap(),
+            json!({"key": "value"})
         );
     }
 
     #[test]
-    fn test_null_value() {
-        let result = parse(r#"empty=null"#).unwrap();
-        assert_eq!(result, json!({"empty": null}));
+    fn unterminated_block_comment_is_error() {
+        assert!(parse("key=/* unterminated").is_err());
     }
 
+    // =========================================================================
+    // §3.3 — Bare Keys
+    // =========================================================================
+
     #[test]
-    fn test_arrays_with_strings() {
-        let result = parse(r#"strings=["hello", "world", "test"]"#).unwrap();
+    fn simple_identifier_key() {
         assert_eq!(
-            result,
-            json!({
-                "strings": ["hello", "world", "test"]
-            })
+            parse(r#"keyname="value""#).unwrap(),
+            json!({"keyname": "value"})
         );
     }
 
     #[test]
-    fn test_arrays_with_numbers() {
-        let result = parse(r#"numbers=[1, 2.5, -3, 4.0]"#).unwrap();
+    fn keyword_true_as_string_key() {
         assert_eq!(
-            result,
-            json!({
-                "numbers": [1, 2.5, -3, 4.0]
-            })
+            parse(r#"true="yes""#).unwrap(),
+            json!({"true": "yes"})
         );
     }
 
     #[test]
-    fn test_nested_objects() {
-        let result = parse(r#"server={host="localhost", port=8080}"#).unwrap();
+    fn keyword_false_as_string_key() {
         assert_eq!(
-            result,
-            json!({
-                "server": {
-                    "host": "localhost",
-                    "port": 8080
-                }
-            })
+            parse(r#"false="no""#).unwrap(),
+            json!({"false": "no"})
         );
     }
 
     #[test]
-    fn test_raw_strings() {
-        let result = parse(r###"path=r"C:\Windows\System32""###).unwrap();
-        assert_eq!(result, json!({"path": r"C:\Windows\System32"}));
-
-        let result2 = parse(r###"quote=r#"He said "hello" to me"#"###).unwrap();
-        assert_eq!(result2["quote"], r#"He said "hello" to me"#);
+    fn keyword_null_as_string_key() {
+        assert_eq!(
+            parse(r#"null="nothing""#).unwrap(),
+            json!({"null": "nothing"})
+        );
     }
 
     #[test]
-    fn test_serialize_basic_object() {
+    fn key_with_hyphen() {
+        assert_eq!(
+            parse(r#"my-key="value""#).unwrap(),
+            json!({"my-key": "value"})
+        );
+    }
+
+    #[test]
+    fn key_with_underscore_and_digits() {
+        assert_eq!(
+            parse(r#"key_1="value""#).unwrap(),
+            json!({"key_1": "value"})
+        );
+    }
+
+    #[test]
+    fn key_with_dot() {
+        assert_eq!(
+            parse("app.version=1").unwrap(),
+            json!({"app.version": 1})
+        );
+    }
+
+    #[test]
+    fn unicode_key() {
+        assert_eq!(
+            parse(r#"名前="テスト""#).unwrap(),
+            json!({"名前": "テスト"})
+        );
+    }
+
+    #[test]
+    fn quoted_key_with_spaces() {
+        assert_eq!(
+            parse(r#""quoted key"="value""#).unwrap(),
+            json!({"quoted key": "value"})
+        );
+    }
+
+    #[test]
+    fn empty_key_is_error() {
+        assert!(parse("=value").is_err());
+    }
+
+    // =========================================================================
+    // §3.4 — Strings
+    // =========================================================================
+
+    #[test]
+    fn double_quoted_string() {
+        assert_eq!(parse(r#"key="hello""#).unwrap(), json!({"key": "hello"}));
+    }
+
+    #[test]
+    fn single_quoted_string() {
+        assert_eq!(parse(r#"key='hello'"#).unwrap(), json!({"key": "hello"}));
+    }
+
+    #[test]
+    fn string_escape_newline_and_tab() {
+        assert_eq!(
+            parse(r#"key="line1\nline2\tindented""#).unwrap(),
+            json!({"key": "line1\nline2\tindented"})
+        );
+    }
+
+    #[test]
+    fn string_escape_unicode() {
+        assert_eq!(
+            parse(r#"key="é""#).unwrap(),
+            json!({"key": "é"})
+        );
+    }
+
+    #[test]
+    fn string_escape_quote_and_backslash() {
+        assert_eq!(
+            parse(r#"key="a\"b\\c""#).unwrap(),
+            json!({"key": "a\"b\\c"})
+        );
+    }
+
+    #[test]
+    fn raw_string_basic() {
+        assert_eq!(
+            parse(r###"key=r"C:\path""###).unwrap(),
+            json!({"key": r"C:\path"})
+        );
+    }
+
+    #[test]
+    fn raw_string_with_hashes() {
+        let result = parse(r###"key=r#"contains "quotes""#"###).unwrap();
+        assert_eq!(result["key"], r#"contains "quotes""#);
+    }
+
+    #[test]
+    fn raw_string_multiline() {
+        let result = parse("key=r\"line1\nline2\"").unwrap();
+        assert_eq!(result["key"], "line1\nline2");
+    }
+
+    #[test]
+    fn unrecognized_escape_is_error() {
+        assert!(parse(r#"key="\q""#).is_err());
+    }
+
+    #[test]
+    fn literal_newline_in_regular_string_is_error() {
+        assert!(parse("key=\"line1\nline2\"").is_err());
+    }
+
+    #[test]
+    fn unterminated_string_is_error() {
+        assert!(parse(r#"key="unterminated"#).is_err());
+    }
+
+    // =========================================================================
+    // §3.5 — Numbers
+    // =========================================================================
+
+    #[test]
+    fn decimal_integer() {
+        assert_eq!(parse("n=42").unwrap(), json!({"n": 42}));
+    }
+
+    #[test]
+    fn negative_integer() {
+        assert_eq!(parse("n=-5").unwrap(), json!({"n": -5}));
+    }
+
+    #[test]
+    fn number_with_underscores() {
+        assert_eq!(parse("n=1_000_000").unwrap(), json!({"n": 1000000}));
+    }
+
+    #[test]
+    fn negative_number_with_underscores() {
+        assert_eq!(parse("n=-50_000").unwrap(), json!({"n": -50000}));
+    }
+
+    #[test]
+    fn float_fractional() {
+        assert_eq!(parse("n=12.5").unwrap(), json!({"n": 12.5}));
+    }
+
+    #[test]
+    fn negative_float() {
+        assert_eq!(parse("n=-45.67").unwrap(), json!({"n": -45.67}));
+    }
+
+    #[test]
+    fn float_with_exponent_only() {
+        assert_eq!(parse("n=1e10").unwrap(), json!({"n": 1e10}));
+    }
+
+    #[test]
+    fn float_with_fractional_and_exponent() {
+        assert_eq!(parse("n=1.5E-3").unwrap(), json!({"n": 1.5e-3}));
+    }
+
+    #[test]
+    fn hex_literal_lowercase() {
+        assert_eq!(parse("n=0xff").unwrap(), json!({"n": 255}));
+    }
+
+    #[test]
+    fn hex_literal_uppercase_digits() {
+        assert_eq!(parse("n=0xDE_AD").unwrap(), json!({"n": 0xDE_AD}));
+    }
+
+    #[test]
+    fn octal_literal() {
+        assert_eq!(parse("n=0o777").unwrap(), json!({"n": 511}));
+    }
+
+    #[test]
+    fn binary_literal() {
+        assert_eq!(parse("n=0b1010").unwrap(), json!({"n": 10}));
+    }
+
+    #[test]
+    fn negative_hex_literal() {
+        assert_eq!(parse("n=-0xff").unwrap(), json!({"n": -255}));
+    }
+
+    #[test]
+    fn positive_with_plus_prefix_is_error() {
+        assert!(parse("n=+5").is_err());
+    }
+
+    #[test]
+    fn uppercase_hex_prefix_is_error() {
+        assert!(parse("n=0Xff").is_err());
+    }
+
+    #[test]
+    fn uppercase_octal_prefix_is_error() {
+        assert!(parse("n=0O77").is_err());
+    }
+
+    #[test]
+    fn uppercase_binary_prefix_is_error() {
+        assert!(parse("n=0B10").is_err());
+    }
+
+    #[test]
+    fn number_type_suffix_is_error() {
+        assert!(parse("n=5u8").is_err());
+    }
+
+    #[test]
+    fn leading_underscore_is_error() {
+        assert!(parse("n=_5").is_err());
+    }
+
+    #[test]
+    fn trailing_underscore_is_error() {
+        assert!(parse("n=5_").is_err());
+    }
+
+    #[test]
+    fn adjacent_underscores_are_error() {
+        assert!(parse("n=5__5").is_err());
+    }
+
+    // =========================================================================
+    // §5 — Objects
+    // =========================================================================
+
+    #[test]
+    fn basic_key_value_pairs() {
+        assert_eq!(
+            parse(r#"a="hello", b=123.45"#).unwrap(),
+            json!({"a": "hello", "b": 123.45})
+        );
+    }
+
+    #[test]
+    fn nested_object() {
+        assert_eq!(
+            parse(r#"server={host="localhost", port=8080}"#).unwrap(),
+            json!({"server": {"host": "localhost", "port": 8080}})
+        );
+    }
+
+    #[test]
+    fn whitespace_around_equals_is_insignificant() {
+        let a = parse(r#"name = "x""#).unwrap();
+        let b = parse(r#"name="x""#).unwrap();
+        let c = parse(r#"name ="x""#).unwrap();
+        let d = parse(r#"name= "x""#).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(c, d);
+    }
+
+    #[test]
+    fn duplicate_keys_at_top_level_are_error() {
+        assert!(parse("a=1, a=2").is_err());
+    }
+
+    #[test]
+    fn duplicate_keys_in_nested_object_are_error() {
+        assert!(parse(r#"outer={a=1, a=2}"#).is_err());
+    }
+
+    #[test]
+    fn key_order_is_preserved() {
+        let result = parse(r#"z=1, a=2, m=3"#).unwrap();
+        let keys: Vec<&String> = result.as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["z", "a", "m"]);
+    }
+
+    // =========================================================================
+    // §5.3 — Separators
+    // =========================================================================
+
+    #[test]
+    fn same_line_comma_separated() {
+        assert_eq!(
+            parse("a=1, b=2, c=3").unwrap(),
+            json!({"a": 1, "b": 2, "c": 3})
+        );
+    }
+
+    #[test]
+    fn newline_separated_multiline() {
+        assert_eq!(
+            parse("a=1\nb=2\nc=3").unwrap(),
+            json!({"a": 1, "b": 2, "c": 3})
+        );
+    }
+
+    #[test]
+    fn mixed_comma_and_newline_separators() {
+        assert_eq!(
+            parse("a=1,\nb=2,\nc=3").unwrap(),
+            json!({"a": 1, "b": 2, "c": 3})
+        );
+    }
+
+    #[test]
+    fn trailing_comma_at_top_level() {
+        assert_eq!(parse("a=1, b=2,").unwrap(), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn trailing_comma_in_braced_object() {
+        assert_eq!(parse("{a=1, b=2,}").unwrap(), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn trailing_comma_in_array() {
+        assert_eq!(parse("k=[1, 2, 3,]").unwrap()["k"], json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn whitespace_around_comma_is_insignificant() {
+        let a = parse("a=1,b=2").unwrap();
+        let b = parse("a=1, b=2").unwrap();
+        let c = parse("a=1 ,b=2").unwrap();
+        let d = parse("a=1 , b=2").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(c, d);
+    }
+
+    #[test]
+    fn same_line_space_only_separator_is_error() {
+        assert!(parse("a=1 b=2").is_err());
+    }
+
+    #[test]
+    fn same_line_tab_only_separator_is_error() {
+        assert!(parse("a=1\tb=2").is_err());
+    }
+
+    #[test]
+    fn array_same_line_no_commas_is_error() {
+        assert!(parse("k=[1 2 3]").is_err());
+    }
+
+    // =========================================================================
+    // §6 — Arrays
+    // =========================================================================
+
+    #[test]
+    fn empty_array() {
+        assert_eq!(parse("k=[]").unwrap()["k"], json!([]));
+    }
+
+    #[test]
+    fn array_of_strings() {
+        assert_eq!(
+            parse(r#"k=["a", "b", "c"]"#).unwrap()["k"],
+            json!(["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn array_mixed_types() {
+        assert_eq!(
+            parse(r#"k=[1, "two", true, null]"#).unwrap()["k"],
+            json!([1, "two", true, null])
+        );
+    }
+
+    #[test]
+    fn nested_arrays() {
+        assert_eq!(
+            parse("k=[[1, 2], [3, 4]]").unwrap()["k"],
+            json!([[1, 2], [3, 4]])
+        );
+    }
+
+    #[test]
+    fn multiline_array_newline_separated() {
+        assert_eq!(
+            parse("k=[\n1\n2\n3\n]").unwrap()["k"],
+            json!([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn unbalanced_array_is_error() {
+        assert!(parse("k=[1, 2").is_err());
+    }
+
+    // =========================================================================
+    // §7 — Serialization
+    // =========================================================================
+
+    #[test]
+    fn compact_serialize_no_spaces_around_equals() {
         let value = json!({"name": "John", "age": 30});
-        let result = serialize(&value);
-        assert_eq!(result, r#"age=30,name="John""#);
+        assert_eq!(serialize(&value), r#"name="John",age=30"#);
     }
 
     #[test]
-    fn test_serialize_nested_object() {
-        let value = json!({"server": {"host": "localhost", "port": 8080.0}});
-        let result = serialize(&value);
-        assert_eq!(result, r#"server={host="localhost",port=8080}"#);
-    }
-
-    #[test]
-    fn test_serialize_array_with_objects() {
-        let value = json!([{"name": "John", "age": 30}, {"name": "Jane", "age": 25}]);
-        let result = serialize(&value);
-        assert_eq!(result, r#"[{age=30,name="John"},{age=25,name="Jane"}]"#);
-    }
-
-    #[test]
-    fn test_serialize_round_trip_simple() {
-        let original = json!({"name": "John", "age": 30, "active": true});
-        let serialized = serialize(&original);
-        let parsed = parse(&serialized).unwrap();
-        assert_eq!(original, parsed);
-    }
-
-    #[test]
-    fn test_serialize_pretty_basic_object() {
-        let value = json!({"name": "John", "age": 30});
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(result, "age = 30,\nname = \"John\"");
-    }
-
-    #[test]
-    fn test_serialize_pretty_nested_objects() {
+    fn compact_serialize_nested_object() {
         let value = json!({"server": {"host": "localhost", "port": 8080}});
-        let result = serialize_pretty(&value, "  ");
+        assert_eq!(serialize(&value), r#"server={host="localhost",port=8080}"#);
+    }
+
+    #[test]
+    fn compact_serialize_top_level_array() {
+        let value = json!([{"a": 1}, {"b": 2}]);
+        assert_eq!(serialize(&value), r#"[{a=1},{b=2}]"#);
+    }
+
+    #[test]
+    fn compact_serialize_has_no_trailing_comma() {
+        let value = json!({"a": 1, "b": 2});
+        let s = serialize(&value);
+        assert!(!s.ends_with(','));
+    }
+
+    #[test]
+    fn pretty_serialize_spaces_around_equals_no_trailing_commas() {
+        let value = json!({"name": "John", "age": 30});
         assert_eq!(
-            result,
-            "server = {\n  host = \"localhost\",\n  port = 8080\n}"
+            serialize_pretty(&value, "  "),
+            "name = \"John\"\nage = 30"
         );
     }
 
     #[test]
-    fn test_serialize_pretty_array() {
+    fn pretty_serialize_nested_object() {
+        let value = json!({"server": {"host": "localhost", "port": 8080}});
+        assert_eq!(
+            serialize_pretty(&value, "  "),
+            "server = {\n  host = \"localhost\"\n  port = 8080\n}"
+        );
+    }
+
+    #[test]
+    fn pretty_serialize_array_no_trailing_commas() {
         let value = json!([1, 2, 3, "hello"]);
-        let result = serialize_pretty(&value, "  ");
-        assert_eq!(result, "[\n  1,\n  2,\n  3,\n  \"hello\"\n]");
-    }
-
-    #[test]
-    fn test_serialize_pretty_array_with_objects() {
-        let value = json!([{"name": "John", "age": 30}, {"name": "Jane", "age": 25}]);
-        let result = serialize_pretty(&value, "  ");
         assert_eq!(
-            result,
-            "[\n  {\n    age = 30,\n    name = \"John\"\n  },\n  {\n    age = 25,\n    name = \"Jane\"\n  }\n]"
+            serialize_pretty(&value, "  "),
+            "[\n  1\n  2\n  3\n  \"hello\"\n]"
         );
     }
 
     #[test]
-    fn test_serialize_pretty_round_trip() {
-        let original = json!({
-            "name": "John",
-            "age": 30,
-            "active": true,
-            "tags": ["developer", "rust"]
-        });
-        let serialized = serialize_pretty(&original, "  ");
-        let parsed = parse(&serialized).unwrap();
+    fn round_trip_compact_preserves_value() {
+        let original = json!({"name": "John", "age": 30, "active": true});
+        let parsed = parse(&serialize(&original)).unwrap();
         assert_eq!(original, parsed);
     }
 
-    // =============================================================================
-    // Serde Integration Tests
-    // =============================================================================
-
     #[test]
-    fn test_serde_serialize_struct() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Config {
-            name: String,
-            age: u32,
-            active: bool,
-        }
-
-        let config = Config {
-            name: "John".to_string(),
-            age: 30,
-            active: true,
-        };
-
-        let jhon_string = to_string(&config).unwrap();
-        // Keys are sorted alphabetically
-        assert_eq!(jhon_string, r#"active=true,age=30,name="John""#);
+    fn round_trip_pretty_preserves_value() {
+        let original = json!({"name": "John", "tags": ["a", "b"]});
+        let parsed = parse(&serialize_pretty(&original, "  ")).unwrap();
+        assert_eq!(original, parsed);
     }
 
     #[test]
-    fn test_serde_deserialize_struct() {
-        use serde::{Deserialize, Serialize};
+    fn hex_octal_binary_serialize_as_decimal() {
+        assert_eq!(serialize(&json!({"n": 255})), "n=255");
+        assert_eq!(serialize(&json!({"n": 511})), "n=511");
+        assert_eq!(serialize(&json!({"n": 10})), "n=10");
+    }
 
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Config {
-            name: String,
-            age: u32,
-            active: bool,
-        }
+    // =========================================================================
+    // §8 — Required Parse Errors (cross-cutting)
+    // =========================================================================
 
-        let jhon_str = r#"name="John",age=30,active=true"#;
-        let config: Config = from_str(jhon_str).unwrap();
-        assert_eq!(config.name, "John");
-        assert_eq!(config.age, 30);
-        assert_eq!(config.active, true);
+    #[test]
+    fn missing_value_is_error() {
+        assert!(parse("key=").is_err());
+        assert!(parse("key=,").is_err());
+        assert!(parse("a=1, key=, b=2").is_err());
     }
 
     #[test]
-    fn test_serde_round_trip_struct() {
+    fn unbalanced_braces_are_error() {
+        assert!(parse("{a=1").is_err());
+        assert!(parse("a=1}").is_err());
+    }
+
+    // =========================================================================
+    // Serde Integration (orthogonal to syntax spec)
+    // =========================================================================
+
+    #[test]
+    fn serde_round_trip_struct() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1580,7 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_serialize_nested_struct() {
+    fn serde_nested_struct_round_trip() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1604,34 +1984,16 @@ mod tests {
         };
 
         let jhon_string = to_string(&config).unwrap();
-        assert_eq!(jhon_string, r#"name="MyApp",server={host="localhost",port=8080}"#);
+        assert_eq!(
+            jhon_string,
+            r#"name="MyApp",server={host="localhost",port=8080}"#
+        );
+        let decoded: AppConfig = from_str(&jhon_string).unwrap();
+        assert_eq!(config, decoded);
     }
 
     #[test]
-    fn test_serde_deserialize_nested_struct() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct ServerConfig {
-            host: String,
-            port: u16,
-        }
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct AppConfig {
-            name: String,
-            server: ServerConfig,
-        }
-
-        let jhon_str = r#"name="MyApp",server={host="localhost",port=8080}"#;
-        let config: AppConfig = from_str(jhon_str).unwrap();
-        assert_eq!(config.name, "MyApp");
-        assert_eq!(config.server.host, "localhost");
-        assert_eq!(config.server.port, 8080);
-    }
-
-    #[test]
-    fn test_serde_serialize_with_arrays() {
+    fn serde_struct_with_arrays_round_trip() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1646,27 +2008,13 @@ mod tests {
         };
 
         let jhon_string = to_string(&config).unwrap();
-        assert_eq!(jhon_string, r#"scores=[100,95,88],tags=["rust","web"]"#);
+        assert_eq!(jhon_string, r#"tags=["rust","web"],scores=[100,95,88]"#);
+        let decoded: Config = from_str(&jhon_string).unwrap();
+        assert_eq!(config, decoded);
     }
 
     #[test]
-    fn test_serde_deserialize_with_arrays() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Config {
-            tags: Vec<String>,
-            scores: Vec<i32>,
-        }
-
-        let jhon_str = r#"tags=["rust","web"],scores=[100,95,88]"#;
-        let config: Config = from_str(jhon_str).unwrap();
-        assert_eq!(config.tags, vec!["rust", "web"]);
-        assert_eq!(config.scores, vec![100, 95, 88]);
-    }
-
-    #[test]
-    fn test_serde_serialize_with_option() {
+    fn serde_option_some_and_none() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1675,33 +2023,22 @@ mod tests {
             description: Option<String>,
         }
 
-        let config = Config {
+        let with_some = Config {
             name: "Test".to_string(),
             description: Some("A test config".to_string()),
         };
+        assert_eq!(
+            to_string(&with_some).unwrap(),
+            r#"name="Test",description="A test config""#
+        );
 
-        let jhon_string = to_string(&config).unwrap();
-        assert_eq!(jhon_string, r#"description="A test config",name="Test""#);
+        let decoded: Config = from_str(r#"name="Test""#).unwrap();
+        assert_eq!(decoded.name, "Test");
+        assert_eq!(decoded.description, None);
     }
 
     #[test]
-    fn test_serde_deserialize_with_option_none() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Config {
-            name: String,
-            description: Option<String>,
-        }
-
-        let jhon_str = r#"name="Test""#;
-        let config: Config = from_str(jhon_str).unwrap();
-        assert_eq!(config.name, "Test");
-        assert_eq!(config.description, None);
-    }
-
-    #[test]
-    fn test_jhon_wrapper_to_string() {
+    fn serde_jhon_wrapper_round_trip() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1712,46 +2049,13 @@ mod tests {
 
         let point = Point { x: 10, y: 20 };
         let jhon_string = Jhon::to_string(&point).unwrap();
-        assert_eq!(jhon_string, r#"x=10,y=20"#);
+        assert_eq!(jhon_string, "x=10,y=20");
+        let decoded: Point = Jhon::from_str(&jhon_string).unwrap();
+        assert_eq!(point, decoded);
     }
 
     #[test]
-    fn test_jhon_wrapper_from_str() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Point {
-            x: i32,
-            y: i32,
-        }
-
-        let jhon_str = r#"x=10,y=20"#;
-        let point: Point = Jhon::from_str(jhon_str).unwrap();
-        assert_eq!(point.x, 10);
-        assert_eq!(point.y, 20);
-    }
-
-    #[test]
-    fn test_serde_pretty_print() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq)]
-        struct Config {
-            name: String,
-            age: u32,
-        }
-
-        let config = Config {
-            name: "John".to_string(),
-            age: 30,
-        };
-
-        let jhon_string = to_string_pretty(&config, "  ").unwrap();
-        assert_eq!(jhon_string, "age = 30,\nname = \"John\"");
-    }
-
-    #[test]
-    fn test_serde_with_enum() {
+    fn serde_enum_representation() {
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -1774,21 +2078,28 @@ mod tests {
 
         let jhon_string = to_string(&task).unwrap();
         assert_eq!(jhon_string, r#"name="Task1",status="Active""#);
-
         let decoded: Task = from_str(&jhon_string).unwrap();
         assert_eq!(decoded, task);
     }
 
     #[test]
-    fn test_all_original_tests_still_pass() {
-        // Ensure all original parse tests still work
-        let result = parse(r#"a="hello", b=123.45"#).unwrap();
+    fn serde_pretty_print_no_trailing_commas() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Config {
+            name: String,
+            age: u32,
+        }
+
+        let config = Config {
+            name: "John".to_string(),
+            age: 30,
+        };
+
         assert_eq!(
-            result,
-            json!({
-                "a": "hello",
-                "b": 123.45
-            })
+            to_string_pretty(&config, "  ").unwrap(),
+            "name = \"John\"\nage = 30"
         );
     }
 }
