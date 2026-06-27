@@ -179,7 +179,7 @@ Benchmark results across multiple implementations (nanoseconds per operation):
 
 | Language | Parse Small | Parse Medium | vs JSON (Small) | vs JSON (Medium) |
 |----------|-------------|--------------|------------------|------------------|
-| **Rust** | 238 ns | 1,133 ns | 1.29x slower | 1.38x slower |
+| **Rust** | 395 ns | 1,630 ns | 1.20x slower | 1.24x slower |
 | **Go** | 223 ns | 1,234 ns | **2.19x faster** | **1.56x faster** |
 | **Java** | 181 ns | 1,560 ns | **2.60x faster** | **1.38x faster** |
 | **Python** | 4,488 ns | 25,565 ns | 7.98x slower | 21.02x slower |
@@ -189,7 +189,7 @@ Benchmark results across multiple implementations (nanoseconds per operation):
 
 | Language | Serialize Small | Serialize Medium | vs JSON (Small) | vs JSON (Medium) |
 |----------|-----------------|------------------|-----------------|------------------|
-| **Rust** | 130 ns | 468 ns | 2.38x slower | 1.55x slower |
+| **Rust** | 136 ns | 347 ns | 2.20x slower | 1.24x slower |
 | **Go** | 134 ns | 845 ns | **2.13x faster** | **1.42x faster** |
 | **Java** | 519 ns | 2,078 ns | **2.50x faster** | **1.15x faster** |
 | **Python** | 1,248 ns | 8,818 ns | 1.51x slower | 5.77x slower |
@@ -197,7 +197,7 @@ Benchmark results across multiple implementations (nanoseconds per operation):
 ### Key Takeaways
 
 - **Go and Java** implementations are **faster than standard JSON** libraries for both parsing and serialization
-- **Rust** implementation is competitive within 1.3-2.4x of highly optimized serde_json
+- **Rust** implementation is competitive within 1.2-2.2x of highly optimized serde_json
 - **Python/TypeScript** trade some performance for developer convenience (typical for config files)
 
 **Benchmark Details:**
