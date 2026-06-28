@@ -47,17 +47,17 @@ serializePretty(config);
 
 ## API
 
-### Simple API (plain JS objects)
+### Simple API (plain JS values)
 
 ```typescript
-function parse(input: string): JhonObject;
+function parse(input: string): JhonValue;
 function serialize(value: JhonValue, options?: SerializeOptions): string;
 function serializePretty(value: JhonValue, options?: SerializePrettyOptions): string;
 ```
 
-- `parse` returns a plain JS object. Throws `JhonParseError` on syntax errors.
-- `serialize` produces compact single-line output. No spaces around `=` or after `,`. No trailing commas.
-- `serializePretty` produces multi-line output with one pair per line. Spaces around `=`. **No trailing commas, no commas between properties** (newline-only separators — see SPEC §7.1).
+- `parse` returns a plain JS value. The result is usually an object (for a `key=value` document), but per SPEC §2 it can also be an array (top-level bare values), or `null` (empty / whitespace-only / comments-only input). Throws `JhonParseError` on syntax errors.
+- `serialize` produces compact single-line output. No spaces around `=` or after `,`. No trailing commas. Top-level arrays emit bare (no surrounding `[]`); empty containers and `null` emit the empty string.
+- `serializePretty` produces multi-line output with one pair per line. Spaces around `=`. **No trailing commas, no commas between properties** (newline-only separators — see SPEC §7.1). Top-level arrays emit one element per line with no `[]`.
 
 ```typescript
 interface SerializeOptions {
@@ -97,9 +97,10 @@ class JhonParseError extends Error {
 
 ## Syntax reference
 
-JHON documents are `key=value` pairs. Top-level braces are optional. Separators between items are either commas or newlines (but two items on the same line must use a comma).
+JHON documents are usually `key=value` pairs (an object), but the top level can also be an **implicit array** of bare values. The first top-level element decides: if it's a `key=value` pair, the document is an object; if it's anything else (scalar, `{...}`, `[...]`), the document is an array with the surrounding `[]` omitted. Top-level braces/brackets are always single elements, never document wrappers.
 
 ```
+// Object mode (default)
 name = "John"
 age = 30
 server = { host = "localhost", port = 5432 }
@@ -107,7 +108,19 @@ features = [
   "auth"
   "api"
 ]
+
+// Array mode — top-level scalars or literals
+42                                    // → [42]
+1
+2
+"haha"
+{a=4}                                 // → [1, 2, "haha", {"a": 4}]
+
+// Empty input → null
+""                                    // → null
 ```
+
+Separators between items are either commas or newlines (but two items on the same line must use a comma). Mixing `key=value` pairs with bare values at the top level is an error.
 
 ### Strings
 
@@ -144,10 +157,12 @@ Bare keys may contain any character except whitespace, `=`, `,`, `{ } [ ]`, `/`,
 
 ### Other rules
 
-- Top-level scalars are not valid documents.
-- Top-level arrays are valid but must be the entire document.
+- Top-level scalars are valid — they parse to a single-element array.
+- Top-level `{...}` parses to a single-element array containing the object (e.g. `{a=1}` → `[{"a": 1}]`). Top-level `[...]` does the same for arrays.
+- Mixing `key=value` pairs with bare values at the top level is an error (e.g. `a=1\n2`).
 - Duplicate keys in the same object are an error.
-- Empty input parses to `{}`.
+- Empty input (empty string, whitespace-only, or comments-only) parses to `null`.
+- Empty containers (`{}`, `[]`) and `null` all serialize to the empty string at the top level and re-parse to `null` — round-trip for these is intentionally broken.
 - Trailing commas are allowed everywhere.
 
 ## Performance
@@ -195,6 +210,17 @@ v2.0.0 is a clean rewrite. Notable changes from v1.x:
 - **New rich API:** `parseAst`, `serializeAstCompact`, `serializeAstPretty`, `astToValue` for tooling that needs positions or comment preservation.
 - **`JhonParseError` now carries line/column/endLine/endColumn** for IDE diagnostics.
 - **Removed runtime dependency on `toml`** (it was only used by the benchmark).
+
+## v2.1 migration (SPEC v2.1)
+
+v2.1.0 updates the package to SPEC v2.1. Breaking changes:
+
+- **`parse()` return type widened from `JhonObject` to `JhonValue`.** Documents in array mode now return an array, and empty/whitespace/comments-only input returns `null`. Code that assumed `parse(s)` was always an object needs to handle the array and null cases (or use `parseAst` for explicit AST access).
+- **Top-level scalars are now valid.** A bare `42`, `"haha"`, `true`, or `null` parses to a single-element array. Previously these were parse errors.
+- **Top-level `{...}` and `[...]` are no longer document wrappers.** `{a=1}` now parses to `[{"a": 1}]` (was `{"a": 1}`), and `[1,2,3]` now parses to `[[1,2,3]]` (was `[1,2,3]`). The braces/brackets are always treated as a single element of the implicit top-level array.
+- **Empty input parses to `null`** instead of `{}`. This includes whitespace-only and comments-only input.
+- **Empty containers and `null` serialize to the empty string.** `serialize({})`, `serialize([])`, and `serialize(null)` all emit `""`. They re-parse to `null`, so round-trip is intentionally broken for these.
+- **Top-level arrays serialize bare (no surrounding `[]`).** `serialize([1, 2, 3])` returns `"1,2,3"`. Nested arrays preserve their brackets.
 
 ## License
 

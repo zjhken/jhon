@@ -85,8 +85,16 @@ export function serializeKey(key: string): string {
 
 /** Build a synthetic AST from a plain JS value (no source positions). */
 export function synthesizeAst(value: JhonValue): AstDocument {
-  let body: AstObject | AstArray;
-  if (Array.isArray(value)) {
+  let body: AstValue;
+  if (value === null) {
+    // Top-level null → Empty form (serializes to empty string).
+    body = {
+      kind: 'null',
+      range: SYNTHETIC_RANGE,
+      leadingComments: [],
+      trailingComments: [],
+    };
+  } else if (Array.isArray(value)) {
     body = {
       kind: 'array',
       elements: value.map(synthesizeValue),
@@ -95,10 +103,11 @@ export function synthesizeAst(value: JhonValue): AstDocument {
       leadingComments: [],
       trailingComments: [],
     };
-  } else if (typeof value === 'object' && value !== null) {
+  } else if (typeof value === 'object') {
     body = synthesizeObject(value, true);
   } else {
-    body = synthesizeObject({}, true);
+    // Scalar top-level — emit directly (round-trips through array mode).
+    body = synthesizeValue(value);
   }
   return {
     kind: 'document',

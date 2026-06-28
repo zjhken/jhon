@@ -97,7 +97,7 @@ function emitCompactValue(
       emitCompactObject(node, ctx, pos);
       break;
     case 'array':
-      emitCompactArray(node, ctx);
+      emitCompactArray(node, ctx, pos);
       break;
     case 'string':
       emitCompactString(node, ctx);
@@ -109,7 +109,9 @@ function emitCompactValue(
       ctx.out += node.value ? 'true' : 'false';
       break;
     case 'null':
-      ctx.out += 'null';
+      // Top-level null (the "Empty" form) emits nothing. Nested nulls emit
+      // "null" text.
+      if (!pos.isTopLevel) ctx.out += 'null';
       break;
   }
 
@@ -162,19 +164,22 @@ function emitCompactProperty(prop: AstProperty, ctx: CompactCtx): void {
   }
 }
 
-function emitCompactArray(arr: AstArray, ctx: CompactCtx): void {
+function emitCompactArray(arr: AstArray, ctx: CompactCtx, pos: CompactPos): void {
   if (arr.elements.length === 0) {
-    ctx.out += '[]';
+    // Top-level empty array → empty string (the "Empty" form).
+    // Nested empty array → "[]".
+    if (!pos.isTopLevel) ctx.out += '[]';
     return;
   }
-  ctx.out += '[';
+  // Top-level non-empty array → bare (no surrounding []).
+  if (!pos.isTopLevel) ctx.out += '[';
   let first = true;
   for (const el of arr.elements) {
     if (!first) ctx.out += ',';
     first = false;
     emitCompactValue(el, ctx, { isTopLevel: false, inArray: true });
   }
-  ctx.out += ']';
+  if (!pos.isTopLevel) ctx.out += ']';
 }
 
 function emitCompactString(s: AstString, ctx: CompactCtx): void {
@@ -225,10 +230,25 @@ function emitPrettyDocument(doc: AstDocument, ctx: PrettyCtx): void {
   emitLeadingComments(doc.body.leadingComments, ctx, 0);
 
   const body = doc.body;
-  if (body.kind === 'object') {
-    emitPrettyObject(body, ctx, 0, false);
-  } else {
-    emitPrettyArray(body, ctx, 0);
+  switch (body.kind) {
+    case 'object':
+      emitPrettyObject(body, ctx, 0, false);
+      break;
+    case 'array':
+      // Top-level array: empty → nothing; non-empty → bare (no surrounding []).
+      if (body.elements.length === 0) {
+        // emit nothing (the "Empty" form)
+      } else {
+        emitPrettyTopArray(body, ctx);
+      }
+      break;
+    case 'null':
+      // Top-level null (empty input) → emit nothing.
+      break;
+    default:
+      // Top-level scalar: emit the scalar directly.
+      emitPrettyValue(body, ctx, 0, false);
+      break;
   }
 
   // Body trailing + doc trailing.
@@ -245,6 +265,55 @@ function emitPrettyDocument(doc: AstDocument, ctx: PrettyCtx): void {
     }
     ctx.out = ctx.out.slice(0, -1);
   }
+}
+
+/**
+ * Emit a top-level implicit array (no surrounding []). Each element on its
+ * own line at column 0; object literals keep braces since they are array
+ * elements, not the implicit top-level form.
+ */
+function emitPrettyTopArray(arr: AstArray, ctx: PrettyCtx): void {
+  let first = true;
+  for (const el of arr.elements) {
+    if (!first) ctx.out += '\n';
+    first = false;
+
+    emitLeadingComments(el.leadingComments, ctx, 0);
+
+    if (el.kind === 'object') {
+      // Object element: braces required, body at indent 1, no leading indent.
+      // Reuse emitPrettyObject with inArray=true at depth=-1 conceptually;
+      // emit inline to control indentation precisely.
+      emitPrettyTopArrayObject(el, ctx);
+    } else {
+      emitPrettyValue(el, ctx, 0, false);
+    }
+
+    emitInlineTrailingComments(el.trailingComments, ctx);
+  }
+}
+
+/** Helper for emitPrettyTopArray: emit an object element at column 0. */
+function emitPrettyTopArrayObject(obj: AstObject, ctx: PrettyCtx): void {
+  const props = ctx.sortKeys
+    ? [...obj.properties].sort((a, b) => a.key.value.localeCompare(b.key.value))
+    : obj.properties;
+
+  if (props.length === 0) {
+    ctx.out += '{}';
+    return;
+  }
+
+  ctx.out += '{\n';
+  let first = true;
+  for (const prop of props) {
+    if (!first) ctx.out += '\n';
+    first = false;
+    ctx.out += indentStr(ctx, 1);
+    ctx.out += serializeKey(prop.key.value) + ' = ';
+    emitPrettyValue(prop.value, ctx, 1, false);
+  }
+  ctx.out += '\n}';
 }
 
 function emitPrettyValue(

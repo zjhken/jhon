@@ -224,26 +224,33 @@ func Parse(input string) (Value, error) {
 	p := newParser([]byte(input))
 	p.skipWsAndComments()
 	if p.pos >= len(p.input) {
-		return Object{}, nil
+		// Empty input (including whitespace-only and comments-only) → nil.
+		// Per SPEC §2, this is the "Empty" form, distinct from {} and [].
+		return nil, nil
 	}
 
+	// Mode detection (SPEC §2): the first top-level element decides whether
+	// the document is parsed as an object (key=value pairs) or as an implicit
+	// array (bare values). `{...}` and `[...]` always begin array mode since
+	// they cannot start a `key=` pair.
 	first, _ := p.current()
-	switch first {
-	case '{':
-		return p.parseNestedObject()
-	case '[':
-		v, err := p.parseArray()
-		if err != nil {
-			return nil, err
+	objectMode := false
+	if first != '{' && first != '[' {
+		// Save parser state, try to parse a key, look ahead for '='.
+		savedPos, savedLine, savedCol := p.pos, p.line, p.col
+		if _, err := p.parseKey(); err == nil {
+			p.skipWsAndComments()
+			if c, ok := p.current(); ok && c == '=' {
+				objectMode = true
+			}
 		}
-		// A top-level array must consume the entire document.
-		p.skipWsAndComments()
-		if p.pos < len(p.input) {
-			return nil, p.syntaxErr("unexpected content after top-level array")
-		}
-		return v, nil
+		p.pos, p.line, p.col = savedPos, savedLine, savedCol
 	}
-	return p.parseJhonObject()
+
+	if objectMode {
+		return p.parseJhonObject()
+	}
+	return p.parseJhonArray()
 }
 
 // MustParse parses a JHON config string and panics on error.
@@ -279,6 +286,34 @@ func (p *parser) parseJhonObject() (Value, error) {
 		}
 	}
 	return obj, nil
+}
+
+// parseJhonArray parses a top-level implicit array (no surrounding []).
+// Per SPEC §2: when the first top-level element is not a key=value pair, the
+// whole document is treated as an array. Mixing pairs into array mode is an
+// error.
+func (p *parser) parseJhonArray() (Value, error) {
+	arr := Array{}
+	p.skipWsAndComments()
+	for p.pos < len(p.input) {
+		// Reject `key=value` pairs mixed into array mode.
+		if c, ok := p.current(); ok && c == '=' {
+			return nil, p.syntaxErr("cannot mix key=value pairs and bare values at top level")
+		}
+		val, err := p.parseValue()
+		if err != nil {
+			return nil, err
+		}
+		arr = append(arr, val)
+		sawNewline, sawComma := p.skipInterItemSeparator()
+		if p.pos >= len(p.input) {
+			break
+		}
+		if !sawNewline && !sawComma {
+			return nil, p.syntaxErr("items on the same line must be separated by a comma")
+		}
+	}
+	return arr, nil
 }
 
 // parseNestedObject parses a braced object: { k=v, ... }.
@@ -851,14 +886,99 @@ func Serialize(v Value) string {
 // When opts.Indent is non-empty, the output is pretty-printed (multi-line
 // with spaces around =, no trailing commas, no commas between properties).
 func SerializeWithOptions(v Value, opts SerializeOptions) string {
-	if opts.Indent != "" {
-		var sb strings.Builder
-		serializePretty(v, opts, 0, false, &sb)
-		return sb.String()
-	}
 	var sb strings.Builder
-	serializeCompact(v, opts, &sb)
+	if opts.Indent != "" {
+		serializeTopPretty(v, opts, &sb)
+	} else {
+		serializeTopCompact(v, opts, &sb)
+	}
 	return sb.String()
+}
+
+// serializeTopCompact handles top-level serialization per SPEC §2:
+//   - empty containers and nil emit nothing (the "Empty" form);
+//   - top-level arrays emit bare (no surrounding []);
+//   - everything else falls through to serializeCompact (which preserves
+//     nested [] and nested null literals).
+func serializeTopCompact(v Value, opts SerializeOptions, sb *strings.Builder) {
+	switch val := v.(type) {
+	case Array:
+		if len(val) == 0 {
+			return
+		}
+		serializeArrayContentsCompact(val, opts, sb)
+	case Object:
+		if len(val) == 0 {
+			return
+		}
+		serializeCompact(v, opts, sb)
+	case nil:
+		return
+	default:
+		serializeCompact(v, opts, sb)
+	}
+}
+
+// serializeTopPretty mirrors serializeTopCompact for pretty mode.
+func serializeTopPretty(v Value, opts SerializeOptions, sb *strings.Builder) {
+	switch val := v.(type) {
+	case Array:
+		if len(val) == 0 {
+			return
+		}
+		serializeTopArrayPretty(val, opts, sb)
+	case Object:
+		if len(val) == 0 {
+			return
+		}
+		serializePretty(v, opts, 0, false, sb)
+	case nil:
+		return
+	default:
+		serializePretty(v, opts, 0, false, sb)
+	}
+}
+
+// serializeTopArrayPretty emits a top-level implicit array (no surrounding []).
+// Each element appears on its own line at column 0; object/array literals keep
+// their braces/brackets since they are array elements, not the implicit form.
+func serializeTopArrayPretty(arr Array, opts SerializeOptions, sb *strings.Builder) {
+	indent := opts.Indent
+	if indent == "" {
+		indent = "  "
+	}
+	first := true
+	for _, v := range arr {
+		if !first {
+			sb.WriteByte('\n')
+		}
+		first = false
+		switch inner := v.(type) {
+		case Object:
+			if len(inner) == 0 {
+				sb.WriteString("{}")
+				continue
+			}
+			// Object element: braces required, body at indent 1, no leading indent.
+			sb.WriteString("{\n")
+			keys := objectKeys(inner, opts.SortKeys)
+			firstPair := true
+			for _, k := range keys {
+				if !firstPair {
+					sb.WriteByte('\n')
+				}
+				firstPair = false
+				sb.WriteString(indent)
+				serializeKey(k, sb)
+				sb.WriteString(" = ")
+				serializePretty(inner[k], opts, 1, false, sb)
+			}
+			sb.WriteByte('\n')
+			sb.WriteByte('}')
+		default:
+			serializePretty(v, opts, 0, false, sb)
+		}
+	}
 }
 
 // SerializePretty is a convenience wrapper that forces pretty mode.
@@ -930,6 +1050,13 @@ func serializeObjectCompact(obj Object, opts SerializeOptions, sb *strings.Build
 
 func serializeArrayCompact(arr Array, opts SerializeOptions, sb *strings.Builder) {
 	sb.WriteByte('[')
+	serializeArrayContentsCompact(arr, opts, sb)
+	sb.WriteByte(']')
+}
+
+// serializeArrayContentsCompact emits the comma-separated contents of an array
+// without the surrounding []. Used for top-level implicit arrays per SPEC §2.
+func serializeArrayContentsCompact(arr Array, opts SerializeOptions, sb *strings.Builder) {
 	first := true
 	for _, v := range arr {
 		if !first {
@@ -948,7 +1075,6 @@ func serializeArrayCompact(arr Array, opts SerializeOptions, sb *strings.Builder
 		}
 		serializeCompact(v, opts, sb)
 	}
-	sb.WriteByte(']')
 }
 
 func serializePretty(v Value, opts SerializeOptions, depth int, inArray bool, sb *strings.Builder) {

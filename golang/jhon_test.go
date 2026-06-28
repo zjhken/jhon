@@ -14,8 +14,8 @@ func TestEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}
-	if !reflect.DeepEqual(v, Object{}) {
-		t.Fatalf("expected empty Object, got %#v", v)
+	if v != nil {
+		t.Fatalf("expected nil (Empty form), got %#v", v)
 	}
 }
 
@@ -24,8 +24,8 @@ func TestWhitespaceOnlyInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(v, Object{}) {
-		t.Fatalf("got %#v", v)
+	if v != nil {
+		t.Fatalf("expected nil, got %#v", v)
 	}
 }
 
@@ -34,8 +34,8 @@ func TestCommentsOnlyInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(v, Object{}) {
-		t.Fatalf("got %#v", v)
+	if v != nil {
+		t.Fatalf("expected nil, got %#v", v)
 	}
 }
 
@@ -50,19 +50,82 @@ func TestTopLevelObjectWithoutBraces(t *testing.T) {
 	}
 }
 
-func TestTopLevelObjectWithBraces(t *testing.T) {
+func TestTopLevelObjectWithBracesIsSingleElementArray(t *testing.T) {
+	// Per SPEC §2: top-level `{...}` is one element of the implicit array.
 	v, err := Parse(`{name="x",port=80}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Object{"name": "x", "port": int64(80)}
+	want := Array{Object{"name": "x", "port": int64(80)}}
 	if !reflect.DeepEqual(v, want) {
 		t.Fatalf("got %#v want %#v", v, want)
 	}
 }
 
-func TestTopLevelArrayAlone(t *testing.T) {
+func TestTopLevelExplicitArrayIsSingleElementArray(t *testing.T) {
+	// Per SPEC §2: top-level `[...]` is one element of the implicit array.
 	v, err := Parse("[1, 2, 3]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{Array{int64(1), int64(2), int64(3)}}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelScalarNumber(t *testing.T) {
+	v, err := Parse("42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{int64(42)}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelScalarString(t *testing.T) {
+	v, err := Parse(`"hello"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{"hello"}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelScalarBoolean(t *testing.T) {
+	v1, err := Parse("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v1, Array{true}) {
+		t.Fatalf("got %#v", v1)
+	}
+	v2, err := Parse("false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(v2, Array{false}) {
+		t.Fatalf("got %#v", v2)
+	}
+}
+
+func TestTopLevelScalarNull(t *testing.T) {
+	v, err := Parse("null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{nil}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelMultipleScalarsNewlineSeparated(t *testing.T) {
+	v, err := Parse("1\n2\n3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,26 +135,82 @@ func TestTopLevelArrayAlone(t *testing.T) {
 	}
 }
 
-func TestTopLevelScalarNumberIsError(t *testing.T) {
-	if _, err := Parse("42"); err == nil {
+func TestTopLevelMultipleScalarsCommaSeparated(t *testing.T) {
+	v, err := Parse(`1,2,"haha"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{int64(1), int64(2), "haha"}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelMixedScalarsAndObject(t *testing.T) {
+	// The example from the spec change request.
+	v, err := Parse("1\n2\n\"haha\"\n{a=4}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{int64(1), int64(2), "haha", Object{"a": int64(4)}}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelMultipleObjects(t *testing.T) {
+	v, err := Parse("{a=1}\n{b=2}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Array{Object{"a": int64(1)}, Object{"b": int64(2)}}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelKeywordAsKeyIsObjectMode(t *testing.T) {
+	// `true`, `false`, `null` in key position are strings.
+	v, err := Parse("true=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Object{"true": int64(1)}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelNumericKeyIsObjectMode(t *testing.T) {
+	v, err := Parse(`42="x"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Object{"42": "x"}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelQuotedStringKeyIsObjectMode(t *testing.T) {
+	v, err := Parse(`"key"="value"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Object{"key": "value"}
+	if !reflect.DeepEqual(v, want) {
+		t.Fatalf("got %#v want %#v", v, want)
+	}
+}
+
+func TestTopLevelMixedPairThenScalarIsError(t *testing.T) {
+	if _, err := Parse("a=1\n2"); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestTopLevelScalarStringIsError(t *testing.T) {
-	if _, err := Parse(`"hello"`); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTopLevelScalarBooleanIsError(t *testing.T) {
-	if _, err := Parse("true"); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestTopLevelScalarNullIsError(t *testing.T) {
-	if _, err := Parse("null"); err == nil {
+func TestTopLevelMixedScalarThenPairIsError(t *testing.T) {
+	if _, err := Parse("1\na=2"); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -643,8 +762,9 @@ func TestCompactSerializeNestedObject(t *testing.T) {
 }
 
 func TestCompactSerializeTopLevelArray(t *testing.T) {
+	// Top-level arrays serialize bare (no surrounding []).
 	got := Serialize(Array{Object{"a": int64(1)}, Object{"b": int64(2)}})
-	if got != `[{a=1},{b=2}]` {
+	if got != `{a=1},{b=2}` {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -672,10 +792,50 @@ func TestPrettySerializeNestedObject(t *testing.T) {
 }
 
 func TestPrettySerializeArrayNoTrailingCommas(t *testing.T) {
+	// Top-level arrays serialize bare: one element per line, no [].
 	got := SerializePretty(Array{int64(1), int64(2), int64(3)}, "  ")
-	want := "[\n  1\n  2\n  3\n]"
+	want := "1\n2\n3"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestSerializeTopLevelArrayWithObject(t *testing.T) {
+	got := Serialize(Array{int64(1), Object{"a": int64(2)}})
+	if got != `1,{a=2}` {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSerializeEmptyObjectToEmptyString(t *testing.T) {
+	if got := Serialize(Object{}); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSerializeEmptyArrayToEmptyString(t *testing.T) {
+	if got := Serialize(Array{}); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSerializeTopLevelNilToEmptyString(t *testing.T) {
+	if got := Serialize(nil); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSerializeNestedNullPreserved(t *testing.T) {
+	got := Serialize(Object{"a": nil})
+	if got != "a=null" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSerializeNestedArrayPreserved(t *testing.T) {
+	got := Serialize(Object{"a": Array{int64(1), int64(2), int64(3)}})
+	if got != "a=[1,2,3]" {
+		t.Fatalf("got %q", got)
 	}
 }
 

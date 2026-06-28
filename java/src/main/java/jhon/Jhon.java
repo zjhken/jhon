@@ -24,21 +24,32 @@ public final class Jhon {
         try {
             p.skipWsAndComments();
             if (p.pos >= p.len) {
-                return new LinkedHashMap<String, Object>();
+                // Empty input (including whitespace-only and comments-only) → null.
+                // Per SPEC.md §2, this is the "Empty" form, distinct from {} and [].
+                return null;
             }
+            // Mode detection (SPEC.md §2): the first top-level element decides.
+            // `{...}` and `[...]` always begin array mode since they cannot
+            // start a `key=` pair.
             char first = p.current();
-            if (first == '{') {
-                return p.parseNestedObject();
-            }
-            if (first == '[') {
-                Object arr = p.parseArray();
-                p.skipWsAndComments();
-                if (p.pos < p.len) {
-                    throw p.syntaxErr("unexpected content after top-level array");
+            boolean objectMode = false;
+            if (first != '{' && first != '[') {
+                int savedPos = p.pos, savedLine = p.line, savedCol = p.col;
+                try {
+                    p.parseKey();
+                    p.skipWsAndComments();
+                    if (p.current() == '=') objectMode = true;
+                } catch (ParseError ignored) {
+                    // Not a valid key — fall through to array mode.
                 }
-                return arr;
+                p.pos = savedPos;
+                p.line = savedLine;
+                p.col = savedCol;
             }
-            return p.parseJhonObject();
+            if (objectMode) {
+                return p.parseJhonObject();
+            }
+            return p.parseJhonArray();
         } catch (ParseError e) {
             throw new JhonParseException(e);
         }
@@ -46,14 +57,14 @@ public final class Jhon {
 
     public static String serialize(Object value) {
         StringBuilder sb = new StringBuilder();
-        serializeCompact(value, sb);
+        serializeTopCompact(value, sb);
         return sb.toString();
     }
 
     public static String serializePretty(Object value, String indent) {
         if (indent == null || indent.isEmpty()) indent = "  ";
         StringBuilder sb = new StringBuilder();
-        serializePretty(value, indent, 0, false, sb);
+        serializeTopPretty(value, indent, sb);
         return sb.toString();
     }
 
@@ -235,6 +246,24 @@ public final class Jhon {
                 }
             }
             return obj;
+        }
+
+        ArrayList<Object> parseJhonArray() throws ParseError {
+            ArrayList<Object> arr = new ArrayList<>();
+            skipWsAndComments();
+            while (pos < len) {
+                // Reject `key=value` pairs mixed into array mode.
+                if (current() == '=') {
+                    throw syntaxErr("cannot mix key=value pairs and bare values at top level");
+                }
+                arr.add(parseValue());
+                boolean[] sep = skipInterItemSeparator();
+                if (pos >= len) break;
+                if (!sep[0] && !sep[1]) {
+                    throw syntaxErr("items on the same line must be separated by a comma");
+                }
+            }
+            return arr;
         }
 
         Map<String, Object> parseNestedObject() throws ParseError {
@@ -630,6 +659,81 @@ public final class Jhon {
     // Serializer
     // ==================================================================================
 
+    // Top-level dispatch per SPEC.md §2:
+    //   - empty containers and null emit nothing (the "Empty" form);
+    //   - top-level arrays emit bare (no surrounding []);
+    //   - everything else falls through to serializeCompact (which preserves
+    //     nested [] and nested null literals).
+    static void serializeTopCompact(Object v, StringBuilder sb) {
+        if (v == null) return;
+        if (v instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> obj = (Map<String, Object>) v;
+            if (obj.isEmpty()) return;
+            serializeObjectCompact(obj, sb);
+            return;
+        }
+        if (v instanceof ArrayList) {
+            ArrayList<?> arr = (ArrayList<?>) v;
+            if (arr.isEmpty()) return;
+            serializeArrayContentsCompact(arr, sb);
+            return;
+        }
+        serializeCompact(v, sb);
+    }
+
+    // Top-level pretty dispatch. Mirrors serializeTopCompact.
+    static void serializeTopPretty(Object v, String indent, StringBuilder sb) {
+        if (v == null) return;
+        if (v instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> obj = (Map<String, Object>) v;
+            if (obj.isEmpty()) return;
+            serializeObjectPretty(obj, indent, 0, false, sb);
+            return;
+        }
+        if (v instanceof ArrayList) {
+            ArrayList<?> arr = (ArrayList<?>) v;
+            if (arr.isEmpty()) return;
+            serializeTopArrayPretty(arr, indent, sb);
+            return;
+        }
+        serializeCompact(v, sb);
+    }
+
+    // Emit a top-level implicit array (no surrounding []). Each element on its
+    // own line at column 0; object literals keep braces since they are array
+    // elements, not the implicit top-level form.
+    static void serializeTopArrayPretty(ArrayList<?> arr, String indent, StringBuilder sb) {
+        boolean first = true;
+        for (Object v : arr) {
+            if (!first) sb.append('\n');
+            first = false;
+            if (v instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) v;
+                if (m.isEmpty()) {
+                    sb.append("{}");
+                    continue;
+                }
+                sb.append("{\n");
+                boolean firstPair = true;
+                for (Map.Entry<String, Object> e : m.entrySet()) {
+                    if (!firstPair) sb.append('\n');
+                    firstPair = false;
+                    sb.append(indent);
+                    serializeKey(e.getKey(), sb);
+                    sb.append(" = ");
+                    serializePretty(e.getValue(), indent, 1, false, sb);
+                }
+                sb.append('\n');
+                sb.append('}');
+            } else {
+                serializePretty(v, indent, 0, false, sb);
+            }
+        }
+    }
+
     static void serializeCompact(Object v, StringBuilder sb) {
         if (v == null) {
             sb.append("null");
@@ -649,24 +753,7 @@ public final class Jhon {
                 return;
             }
             sb.append('[');
-            boolean first = true;
-            for (Object el : arr) {
-                if (!first) sb.append(',');
-                first = false;
-                if (el instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> m = (Map<String, Object>) el;
-                    if (m.isEmpty()) {
-                        sb.append("{}");
-                    } else {
-                        sb.append('{');
-                        serializeObjectCompact(m, sb);
-                        sb.append('}');
-                    }
-                    continue;
-                }
-                serializeCompact(el, sb);
-            }
+            serializeArrayContentsCompact(arr, sb);
             sb.append(']');
             return;
         }
@@ -696,6 +783,29 @@ public final class Jhon {
             return;
         }
         sb.append(v.toString());
+    }
+
+    // Emit comma-separated array contents without surrounding []. Used for
+    // top-level implicit arrays per SPEC.md §2.
+    static void serializeArrayContentsCompact(ArrayList<?> arr, StringBuilder sb) {
+        boolean first = true;
+        for (Object el : arr) {
+            if (!first) sb.append(',');
+            first = false;
+            if (el instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) el;
+                if (m.isEmpty()) {
+                    sb.append("{}");
+                } else {
+                    sb.append('{');
+                    serializeObjectCompact(m, sb);
+                    sb.append('}');
+                }
+                continue;
+            }
+            serializeCompact(el, sb);
+        }
     }
 
     static void serializeObjectCompact(Map<String, Object> obj, StringBuilder sb) {

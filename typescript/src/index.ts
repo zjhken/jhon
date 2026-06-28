@@ -37,22 +37,12 @@ import type {
   SourceRange,
 } from './types';
 
-// Re-export the simple-API parse function (operates on plain JS objects).
-function parse(input: string, options?: ParseOptions): JhonObject {
+// Re-export the simple-API parse function (operates on plain JS values).
+// Per SPEC §2, the result can be an object, an array (top-level bare values),
+// or null (empty/whitespace-only/comments-only input).
+function parse(input: string, options?: ParseOptions): JhonValue {
   const doc = parseAst(input, options);
-  const value = astToValue(doc);
-  // Top-level arrays are allowed per SPEC §2 but `parse()` is typed to return
-  // an object. Callers who need the array case should use `parseAst`.
-  if (Array.isArray(value)) {
-    throw new JhonParseError({
-      message: 'top-level array cannot be returned by parse(); use parseAst()',
-      kind: 'syntax',
-      line: 1,
-      column: 1,
-      position: 0,
-    });
-  }
-  return value as JhonObject;
+  return astToValue(doc);
 }
 
 export {

@@ -26,21 +26,21 @@ class JhonTest {
     // ====================================================================================
 
     @Test
-    @DisplayName("empty input → empty object")
+    @DisplayName("empty input → null (Empty form)")
     void emptyInput() throws Exception {
-        assertEquals(obj(), Jhon.parse(""));
+        assertNull(Jhon.parse(""));
     }
 
     @Test
-    @DisplayName("whitespace-only → empty object")
+    @DisplayName("whitespace-only → null")
     void whitespaceOnly() throws Exception {
-        assertEquals(obj(), Jhon.parse("   \n\t\r\n  "));
+        assertNull(Jhon.parse("   \n\t\r\n  "));
     }
 
     @Test
-    @DisplayName("comments-only → empty object")
+    @DisplayName("comments-only → null")
     void commentsOnly() throws Exception {
-        assertEquals(obj(), Jhon.parse("// just a comment\n/* block */"));
+        assertNull(Jhon.parse("// just a comment\n/* block */"));
     }
 
     @Test
@@ -50,41 +50,100 @@ class JhonTest {
     }
 
     @Test
-    @DisplayName("top-level object with braces")
+    @DisplayName("top-level object with braces → single-element array")
     void topLevelObjectWithBraces() throws Exception {
-        assertEquals(obj("name", "x", "port", 80L), Jhon.parse("{name=\"x\",port=80}"));
+        // Per SPEC §2: top-level `{...}` is one element of the implicit array.
+        Object v = Jhon.parse("{name=\"x\",port=80}");
+        assertTrue(v instanceof List);
+        assertEquals(List.of(obj("name", "x", "port", 80L)), v);
     }
 
     @Test
-    @DisplayName("top-level array alone")
+    @DisplayName("top-level explicit array → single-element array")
     void topLevelArrayAlone() throws Exception {
+        // Per SPEC §2: top-level `[...]` is one element of the implicit array.
         Object v = Jhon.parse("[1, 2, 3]");
         assertTrue(v instanceof List);
-        assertEquals(List.of(1L, 2L, 3L), v);
+        assertEquals(List.of(List.of(1L, 2L, 3L)), v);
     }
 
     @Test
-    @DisplayName("top-level scalar number is error")
-    void topLevelScalarNumber() {
-        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("42"));
+    @DisplayName("top-level scalar number → single-element array")
+    void topLevelScalarNumber() throws Exception {
+        assertEquals(List.of(42L), Jhon.parse("42"));
     }
 
     @Test
-    @DisplayName("top-level scalar string is error")
-    void topLevelScalarString() {
-        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("\"hello\""));
+    @DisplayName("top-level scalar string → single-element array")
+    void topLevelScalarString() throws Exception {
+        assertEquals(List.of("hello"), Jhon.parse("\"hello\""));
     }
 
     @Test
-    @DisplayName("top-level scalar boolean is error")
-    void topLevelScalarBoolean() {
-        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("true"));
+    @DisplayName("top-level scalar boolean → single-element array")
+    void topLevelScalarBoolean() throws Exception {
+        assertEquals(List.of(true), Jhon.parse("true"));
+        assertEquals(List.of(false), Jhon.parse("false"));
     }
 
     @Test
-    @DisplayName("top-level scalar null is error")
-    void topLevelScalarNull() {
-        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("null"));
+    @DisplayName("top-level scalar null → single-element array")
+    void topLevelScalarNull() throws Exception {
+        assertEquals(java.util.Collections.singletonList(null), Jhon.parse("null"));
+    }
+
+    @Test
+    @DisplayName("top-level multiple scalars newline-separated")
+    void topLevelMultipleScalars() throws Exception {
+        assertEquals(List.of(1L, 2L, 3L), Jhon.parse("1\n2\n3"));
+    }
+
+    @Test
+    @DisplayName("top-level mixed scalars and object (spec example)")
+    void topLevelMixedScalarsAndObject() throws Exception {
+        assertEquals(
+            List.of(1L, 2L, "haha", obj("a", 4L)),
+            Jhon.parse("1\n2\n\"haha\"\n{a=4}")
+        );
+    }
+
+    @Test
+    @DisplayName("top-level multiple objects")
+    void topLevelMultipleObjects() throws Exception {
+        assertEquals(
+            List.of(obj("a", 1L), obj("b", 2L)),
+            Jhon.parse("{a=1}\n{b=2}")
+        );
+    }
+
+    @Test
+    @DisplayName("top-level keyword as key → object mode")
+    void topLevelKeywordAsKey() throws Exception {
+        assertEquals(obj("true", 1L), Jhon.parse("true=1"));
+    }
+
+    @Test
+    @DisplayName("top-level numeric key → object mode")
+    void topLevelNumericKey() throws Exception {
+        assertEquals(obj("42", "x"), Jhon.parse("42=\"x\""));
+    }
+
+    @Test
+    @DisplayName("top-level quoted string key → object mode")
+    void topLevelQuotedStringKey() throws Exception {
+        assertEquals(obj("key", "value"), Jhon.parse("\"key\"=\"value\""));
+    }
+
+    @Test
+    @DisplayName("top-level mixed pair then scalar is error")
+    void topLevelMixedPairThenScalar() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("a=1\n2"));
+    }
+
+    @Test
+    @DisplayName("top-level mixed scalar then pair is error")
+    void topLevelMixedScalarThenPair() {
+        assertThrows(Jhon.JhonParseException.class, () -> Jhon.parse("1\na=2"));
     }
 
     @Test
@@ -421,12 +480,12 @@ class JhonTest {
     }
 
     @Test
-    @DisplayName("compact serialize top-level array")
+    @DisplayName("compact serialize top-level array (bare, no brackets)")
     void compactSerializeArray() {
         java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
         arr.add(obj("a", 1L));
         arr.add(obj("b", 2L));
-        assertEquals("[{a=1},{b=2}]", Jhon.serialize(arr));
+        assertEquals("{a=1},{b=2}", Jhon.serialize(arr));
     }
 
     @Test
@@ -448,13 +507,42 @@ class JhonTest {
     }
 
     @Test
-    @DisplayName("pretty serialize array")
+    @DisplayName("pretty serialize top-level array (bare, one per line)")
     void prettySerializeArray() {
         java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
         arr.add(1L);
         arr.add(2L);
         arr.add(3L);
-        assertEquals("[\n  1\n  2\n  3\n]", Jhon.serializePretty(arr, "  "));
+        assertEquals("1\n2\n3", Jhon.serializePretty(arr, "  "));
+    }
+
+    @Test
+    @DisplayName("serialize top-level array with object (bare)")
+    void serializeTopLevelArrayWithObject() {
+        java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
+        arr.add(1L);
+        arr.add(obj("a", 2L));
+        assertEquals("1,{a=2}", Jhon.serialize(arr));
+    }
+
+    @Test
+    @DisplayName("serialize empty containers and null → empty string")
+    void serializeEmpty() {
+        assertEquals("", Jhon.serialize(obj()));
+        java.util.ArrayList<Object> arr = new java.util.ArrayList<>();
+        assertEquals("", Jhon.serialize(arr));
+        assertEquals("", Jhon.serialize(null));
+    }
+
+    @Test
+    @DisplayName("nested null and nested array preserved")
+    void serializeNested() {
+        assertEquals("a=null", Jhon.serialize(obj("a", null)));
+        java.util.ArrayList<Object> inner = new java.util.ArrayList<>();
+        inner.add(1L);
+        inner.add(2L);
+        inner.add(3L);
+        assertEquals("a=[1,2,3]", Jhon.serialize(obj("a", inner)));
     }
 
     @Test

@@ -23,38 +23,62 @@ import {
 // ============================================================================
 
 describe('Rust parity: §2 document form', () => {
-  test('empty input parses to empty object', () => {
-    expect(parse('')).toEqual({});
+  test('empty input parses to null (Empty form)', () => {
+    expect(parse('')).toBeNull();
   });
-  test('whitespace-only input parses to empty object', () => {
-    expect(parse('   \n\t\r\n  ')).toEqual({});
+  test('whitespace-only input parses to null', () => {
+    expect(parse('   \n\t\r\n  ')).toBeNull();
   });
-  test('comments-only input parses to empty object', () => {
-    expect(parse('// just a comment\n/* block */')).toEqual({});
+  test('comments-only input parses to null', () => {
+    expect(parse('// just a comment\n/* block */')).toBeNull();
   });
   test('top-level object without braces', () => {
     expect(parse(`name="x",port=80`)).toEqual({ name: 'x', port: 80 });
   });
-  test('top-level object with braces', () => {
-    expect(parse(`{name="x",port=80}`)).toEqual({ name: 'x', port: 80 });
+  test('top-level object with braces is single-element array', () => {
+    // Per SPEC §2: top-level `{...}` is one element of the implicit array.
+    expect(parse(`{name="x",port=80}`)).toEqual([{ name: 'x', port: 80 }]);
   });
-  test('top-level array alone', () => {
-    expect(() => parse('[1, 2, 3]')).toThrow(JhonParseError);
-    // parse() returns JhonObject; arrays are accessible via parseAst.
-    const doc = parseAst('[1, 2, 3]');
-    expect(doc.body.kind).toBe('array');
+  test('top-level explicit array is single-element array', () => {
+    // Per SPEC §2: top-level `[...]` is one element of the implicit array.
+    expect(parse('[1, 2, 3]')).toEqual([[1, 2, 3]]);
   });
-  test('top-level scalar number is error', () => {
-    expect(() => parse('42')).toThrow(JhonParseError);
+  test('top-level scalar number', () => {
+    expect(parse('42')).toEqual([42]);
   });
-  test('top-level scalar string is error', () => {
-    expect(() => parse(`"hello"`)).toThrow(JhonParseError);
+  test('top-level scalar string', () => {
+    expect(parse(`"hello"`)).toEqual(['hello']);
   });
-  test('top-level scalar boolean is error', () => {
-    expect(() => parse('true')).toThrow(JhonParseError);
+  test('top-level scalar boolean', () => {
+    expect(parse('true')).toEqual([true]);
+    expect(parse('false')).toEqual([false]);
   });
-  test('top-level scalar null is error', () => {
-    expect(() => parse('null')).toThrow(JhonParseError);
+  test('top-level scalar null', () => {
+    expect(parse('null')).toEqual([null]);
+  });
+  test('top-level multiple scalars newline-separated', () => {
+    expect(parse('1\n2\n3')).toEqual([1, 2, 3]);
+  });
+  test('top-level mixed scalars and object (spec example)', () => {
+    expect(parse('1\n2\n"haha"\n{a=4}')).toEqual([1, 2, 'haha', { a: 4 }]);
+  });
+  test('top-level multiple objects', () => {
+    expect(parse('{a=1}\n{b=2}')).toEqual([{ a: 1 }, { b: 2 }]);
+  });
+  test('top-level keyword as key is object mode', () => {
+    expect(parse('true=1')).toEqual({ true: 1 });
+  });
+  test('top-level numeric key is object mode', () => {
+    expect(parse('42="x"')).toEqual({ '42': 'x' });
+  });
+  test('top-level quoted string key is object mode', () => {
+    expect(parse(`"key"="value"`)).toEqual({ key: 'value' });
+  });
+  test('top-level mixed pair then scalar is error', () => {
+    expect(() => parse('a=1\n2')).toThrow(JhonParseError);
+  });
+  test('top-level mixed scalar then pair is error', () => {
+    expect(() => parse('1\na=2')).toThrow(JhonParseError);
   });
   test('top-level array followed by pairs is error', () => {
     expect(() => parse('[1, 2] key=value')).toThrow(JhonParseError);
@@ -268,17 +292,22 @@ describe('Rust parity: §5.3 separators', () => {
     expect(parse(`a=1, b=2,`)).toEqual({ a: 1, b: 2 });
   });
   test('trailing comma in braced object', () => {
-    expect(parse(`{a=1, b=2,}`)).toEqual({ a: 1, b: 2 });
+    // Per SPEC §2: top-level `{...}` is a single-element array.
+    expect(parse(`{a=1, b=2,}`)).toEqual([{ a: 1, b: 2 }]);
   });
   test('trailing comma in array', () => {
+    // Per SPEC §2: top-level `[...]` is a single-element array (so the body
+    // array has ONE element which is itself an array of 3 numbers).
     const doc = parseAst(`[1, 2, 3,]`);
     expect(doc.body.kind).toBe('array');
     if (doc.body.kind === 'array') {
-      expect(doc.body.elements.length).toBe(3);
-      expect(doc.body.elements[0]).toMatchObject({
-        kind: 'number',
-        value: 1,
-      });
+      expect(doc.body.elements.length).toBe(1);
+      const inner = doc.body.elements[0];
+      expect(inner.kind).toBe('array');
+      if (inner.kind === 'array') {
+        expect(inner.elements.length).toBe(3);
+        expect(inner.elements[0]).toMatchObject({ kind: 'number', value: 1 });
+      }
     }
   });
   test('whitespace around comma is insignificant', () => {
@@ -364,8 +393,20 @@ describe('Rust parity: §7 serialization', () => {
       `server={host="localhost",port=8080}`
     );
   });
-  test('compact serialize top-level array', () => {
-    expect(serialize([{ a: 1 }, { b: 2 }])).toBe(`[{a=1},{b=2}]`);
+  test('compact serialize top-level array (bare, no brackets)', () => {
+    expect(serialize([{ a: 1 }, { b: 2 }])).toBe(`{a=1},{b=2}`);
+  });
+  test('serialize top-level array with object', () => {
+    expect(serialize([1, { a: 2 }])).toBe(`1,{a=2}`);
+  });
+  test('serialize empty containers and null to empty string', () => {
+    expect(serialize({})).toBe('');
+    expect(serialize([])).toBe('');
+    expect(serialize(null)).toBe('');
+  });
+  test('serialize nested null and nested array preserved', () => {
+    expect(serialize({ a: null })).toBe('a=null');
+    expect(serialize({ a: [1, 2, 3] })).toBe('a=[1,2,3]');
   });
   test('compact serialize has no trailing comma', () => {
     const out = serialize({ a: 1, b: 2, c: 3 });
@@ -382,9 +423,9 @@ describe('Rust parity: §7 serialization', () => {
     });
     expect(out).toBe(`server = {\n  host = "localhost"\n  port = 5432\n}`);
   });
-  test('pretty serialize array no trailing commas', () => {
+  test('pretty serialize top-level array (bare, one per line)', () => {
     const out = serializePretty([1, 2, 3]);
-    expect(out).toBe(`[\n  1\n  2\n  3\n]`);
+    expect(out).toBe(`1\n2\n3`);
   });
   test('round trip compact preserves value', () => {
     const original = { name: 'John', age: 30, server: { host: 'localhost', port: 5432 } };
@@ -412,20 +453,24 @@ describe('Rust parity: §7 serialization', () => {
 // ============================================================================
 
 describe('AST', () => {
-  test('empty input produces empty object body', () => {
+  test('empty input produces null body (Empty form)', () => {
     const doc = parseAst('');
-    expect(doc.body.kind).toBe('object');
-    if (doc.body.kind === 'object') {
-      expect(doc.body.properties).toEqual([]);
-      expect(doc.body.wrapped).toBe(false);
-    }
+    expect(doc.body.kind).toBe('null');
   });
 
-  test('top-level braced object preserves wrapped flag', () => {
+  test('top-level braced object is single-element array (no wrapped flag)', () => {
+    // Per SPEC §2: top-level `{...}` is now an array element, not the
+    // implicit object wrapper. The braced object still has wrapped=true
+    // at the element level.
     const doc = parseAst(`{a=1}`);
-    expect(doc.body.kind).toBe('object');
-    if (doc.body.kind === 'object') {
-      expect(doc.body.wrapped).toBe(true);
+    expect(doc.body.kind).toBe('array');
+    if (doc.body.kind === 'array') {
+      expect(doc.body.elements.length).toBe(1);
+      const el = doc.body.elements[0];
+      expect(el.kind).toBe('object');
+      if (el.kind === 'object') {
+        expect(el.wrapped).toBe(true);
+      }
     }
   });
 
@@ -459,11 +504,14 @@ describe('AST', () => {
     });
   });
 
-  test('top-level array body', () => {
+  test('top-level array body is wrapped in implicit array', () => {
+    // Per SPEC §2: top-level `[...]` is one element of the implicit array.
     const doc = parseAst(`[1, 2, 3]`);
     expect(doc.body.kind).toBe('array');
     if (doc.body.kind === 'array') {
-      expect(doc.body.elements.length).toBe(3);
+      expect(doc.body.elements.length).toBe(1);
+      const inner = doc.body.elements[0];
+      expect(inner.kind).toBe('array');
     }
   });
 });

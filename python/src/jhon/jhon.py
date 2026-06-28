@@ -188,17 +188,27 @@ class Parser:
     def parse(self) -> Any:
         self._skip_ws_and_comments()
         if self._at_end():
-            return {}
+            # Empty input (including whitespace-only and comments-only) → None.
+            # Per SPEC §2, this is the "Empty" form, distinct from {} and [].
+            return None
+        # Mode detection (SPEC §2): the first top-level element decides.
+        # `{...}` and `[...]` always begin array mode since they cannot
+        # start a `key=` pair.
         first = self._current()
-        if first == "{":
-            return self._parse_nested_object()
-        if first == "[":
-            arr = self._parse_array()
-            self._skip_ws_and_comments()
-            if not self._at_end():
-                raise self._syntax_err("unexpected content after top-level array")
-            return arr
-        return self._parse_jhon_object()
+        object_mode = False
+        if first != "{" and first != "[":
+            saved_pos, saved_line, saved_col = self.pos, self.line, self.col
+            try:
+                self._parse_key()
+                self._skip_ws_and_comments()
+                if self._current() == "=":
+                    object_mode = True
+            except JhonParseError:
+                pass
+            self.pos, self.line, self.col = saved_pos, saved_line, saved_col
+        if object_mode:
+            return self._parse_jhon_object()
+        return self._parse_jhon_array()
 
     def _parse_jhon_object(self) -> Dict[str, Any]:
         obj: Dict[str, Any] = {}
@@ -211,6 +221,22 @@ class Parser:
             if not saw_newline and not saw_comma:
                 raise self._syntax_err("items on the same line must be separated by a comma")
         return obj
+
+    def _parse_jhon_array(self) -> List[Any]:
+        arr: List[Any] = []
+        self._skip_ws_and_comments()
+        while self.pos < self.len:
+            if self._current() == "=":
+                raise self._syntax_err(
+                    "cannot mix key=value pairs and bare values at top level"
+                )
+            arr.append(self._parse_value())
+            saw_newline, saw_comma = self._skip_inter_item_separator()
+            if self._at_end():
+                break
+            if not saw_newline and not saw_comma:
+                raise self._syntax_err("items on the same line must be separated by a comma")
+        return arr
 
     def _parse_nested_object(self) -> Dict[str, Any]:
         self._advance()  # {
@@ -565,8 +591,45 @@ class Serializer:
 
     def serialize(self, value: Any) -> str:
         out: List[str] = []
-        self._serialize_compact(value, out)
+        self._serialize_top_compact(value, out)
         return "".join(out)
+
+    def _serialize_top_compact(self, v: Any, out: List[str]) -> None:
+        """Top-level dispatch per SPEC §2: empty containers and None emit
+        nothing (the 'Empty' form); top-level arrays emit bare (no []).
+        Everything else falls through to _serialize_compact which preserves
+        nested [] and nested null literals."""
+        if v is None:
+            return
+        if isinstance(v, list):
+            if not v:
+                return
+            self._serialize_array_contents_compact(v, out)
+            return
+        if isinstance(v, dict):
+            if not v:
+                return
+            self._serialize_object_compact(v, out)
+            return
+        self._serialize_compact(v, out)
+
+    def _serialize_array_contents_compact(self, arr: List[Any], out: List[str]) -> None:
+        """Emit comma-separated array contents without surrounding []. Used
+        for top-level implicit arrays per SPEC §2."""
+        first = True
+        for el in arr:
+            if not first:
+                out.append(",")
+            first = False
+            if isinstance(el, dict) and not el:
+                out.append("{}")
+                continue
+            if isinstance(el, dict):
+                out.append("{")
+                self._serialize_object_compact(el, out)
+                out.append("}")
+                continue
+            self._serialize_compact(el, out)
 
     def _serialize_compact(self, v: Any, out: List[str]) -> None:
         if v is None:
@@ -589,20 +652,7 @@ class Serializer:
                 out.append("[]")
                 return
             out.append("[")
-            first = True
-            for el in v:
-                if not first:
-                    out.append(",")
-                first = False
-                if isinstance(el, dict) and not el:
-                    out.append("{}")
-                    continue
-                if isinstance(el, dict):
-                    out.append("{")
-                    self._serialize_object_compact(el, out)
-                    out.append("}")
-                    continue
-                self._serialize_compact(el, out)
+            self._serialize_array_contents_compact(v, out)
             out.append("]")
             return
         if isinstance(v, dict):
@@ -635,8 +685,52 @@ class Serializer:
 
     def serialize_pretty(self, value: Any, indent: str = "  ") -> str:
         out: List[str] = []
-        self._serialize_pretty(value, indent, 0, False, out)
+        self._serialize_top_pretty(value, indent, out)
         return "".join(out)
+
+    def _serialize_top_pretty(self, v: Any, indent: str, out: List[str]) -> None:
+        """Top-level pretty dispatch. Mirrors _serialize_top_compact."""
+        if v is None:
+            return
+        if isinstance(v, list):
+            if not v:
+                return
+            self._serialize_top_array_pretty(v, indent, out)
+            return
+        if isinstance(v, dict):
+            if not v:
+                return
+            self._serialize_object_pretty(v, indent, 0, False, out)
+            return
+        self._serialize_compact(v, out)
+
+    def _serialize_top_array_pretty(self, arr: List[Any], indent: str, out: List[str]) -> None:
+        """Emit a top-level implicit array (no surrounding []). Each element
+        on its own line at column 0; object literals keep braces since they
+        are array elements, not the implicit top-level form."""
+        first = True
+        for el in arr:
+            if not first:
+                out.append("\n")
+            first = False
+            if isinstance(el, dict) and not el:
+                out.append("{}")
+                continue
+            if isinstance(el, dict):
+                out.append("{\n")
+                first_pair = True
+                for key in self._keys(el):
+                    if not first_pair:
+                        out.append("\n")
+                    first_pair = False
+                    out.append(indent)
+                    self._serialize_key(key, out)
+                    out.append(" = ")
+                    self._serialize_pretty(el[key], indent, 1, False, out)
+                out.append("\n")
+                out.append("}")
+                continue
+            self._serialize_pretty(el, indent, 0, False, out)
 
     def _serialize_pretty(
         self, v: Any, indent: str, depth: int, in_array: bool, out: List[str]

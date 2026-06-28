@@ -1,6 +1,6 @@
 # JHON Language Specification
 
-**Version:** 1.0
+**Version:** 2.1
 **Status:** Canonical reference for all implementations (Rust, Go, Java, Python, TypeScript, VSCode extension).
 
 When this document and an implementation diverge, **this spec wins**. Bugs in implementations should be fixed to match the spec, not the other way around.
@@ -17,16 +17,62 @@ A JHON document always parses to exactly one JSON-compatible value.
 
 ## 2. Document Form
 
-A complete JHON document is one of:
+A JHON document is parsed in one of two modes, decided by the **first** top-level element:
 
-| Form | Example | Notes |
-|------|---------|-------|
-| **Object** (default) | `name="x",port=80` | Sequence of `key=value` pairs. Braces are optional at the top level. |
-| **Braced object** | `{ name="x",port=80 }` | Equivalent to the unbraced form. |
-| **Array** | `[1, 2, 3]` | Allowed at top level, but must be the **entire** document. No `key=value` pairs may follow a top-level array. |
-| **Empty** | *(empty string or whitespace/comments only)* | Parses to an empty object `{}`. |
+### 2.1 Object mode
 
-A **top-level scalar** (a bare number, string, boolean, or null) is **NOT** a valid document.
+The document begins with a `key=value` pair. Every top-level element must be a `key=value` pair. The result is a JSON object.
+
+```
+name="x",port=80                    →  {"name": "x", "port": 80}
+name="x"
+port=80                              →  {"name": "x", "port": 80}
+```
+
+### 2.2 Array mode
+
+The document begins with any value that is **not** a `key=value` pair — a scalar, an object literal (`{...}`), or an array literal (`[...]`). The whole document is treated as an array, with the surrounding `[]` omitted. Every top-level element must be a value; any `key=value` pair is a syntax error.
+
+```
+42                                  →  [42]
+"haha"                              →  ["haha"]
+1
+2
+"haha"
+{a=4}                               →  [1, 2, "haha", {"a": 4}]
+{a=1}
+{b=2}                               →  [{"a": 1}, {"b": 2}]
+```
+
+**Top-level `{...}` and `[...]` are always single elements** of the implicit top-level array. They are never document wrappers:
+
+```
+{a=1}                               →  [{"a": 1}]            (NOT {"a": 1})
+[1, 2, 3]                           →  [[1, 2, 3]]           (NOT [1, 2, 3])
+```
+
+### 2.3 Empty
+
+An empty string, whitespace-only input, or comments-only input parses to a JSON `null`. This is the "Empty" form — distinct from `{}` and `[]`, and the canonical representation of "no data."
+
+```
+""                                  →  null
+"   \n\t  "                         →  null
+"// just a comment"                 →  null
+```
+
+### 2.4 Mixing modes is an error
+
+A document that mixes `key=value` pairs with bare values at the top level is a syntax error:
+
+```
+a=1
+2                                   →  ERROR (pair followed by scalar)
+1
+a=2                                 →  ERROR (scalar followed by pair)
+```
+
+The first element decides the mode; subsequent elements must match.
 
 ---
 
@@ -186,6 +232,7 @@ Object key order is **preserved**. Parsers and serializers must not reorder keys
 - Empty array `[]` is valid.
 - Trailing separator before `]` is allowed.
 - May be nested inside objects or other arrays.
+- May appear at the top level per §2.2 — the array brackets become the implicit top-level container when the document is in array mode. Inside an array-mode document, an explicit `[...]` literal is **one element** (a nested array), not the wrapper.
 
 ---
 
@@ -196,6 +243,7 @@ Object key order is **preserved**. Parsers and serializers must not reorder keys
 - Numbers parsed from hex/octal/binary serialize as decimal.
 - Strings parsed from single/double/raw quotes all become a single canonical string value; the original quoting is lost on parse. (Formatters may re-emit a chosen quote style.)
 - Round-trip `serialize(parse(x))` is value-preserving but not text-preserving.
+- **Empty containers do not round-trip** (per §2.3 and §7.1): `serialize({})`, `serialize([])`, and `serialize(null)` all emit the empty string, which re-parses to `null`. Likewise, a top-level scalar like `serialize(42)` emits `42`, which re-parses to `[42]`. This is accepted: the "Empty" form unifies all representations of "no data."
 
 ### 7.1 Canonical Serialize Forms
 
@@ -213,7 +261,19 @@ Implementations MUST provide two serialize modes:
   name = "John"
   ```
 
-Pretty-mode specifics that remain implementation-defined: indent string, key sorting, quote style, equals alignment. Trailing-comma removal and spaces around `=` are required by this spec, not optional.
+For an **array-mode document** (top-level array), the surrounding `[]` is omitted:
+
+- Compact: elements comma-separated, no brackets. Example: `1,2,"haha"`.
+- Pretty: one element per line, no brackets. Example:
+  ```
+  1
+  2
+  "haha"
+  ```
+
+Empty containers (`{}`, `[]`) and `null` at the top level all serialize to the empty string — the "Empty" form. Nested empty containers preserve their literal form (`{}`, `[]`) as today.
+
+Pretty-mode specifics that remain implementation-defined: indent string, key sorting, quote style, equals alignment. Trailing-comma removal, spaces around `=`, and bare top-level array emission are required by this spec, not optional.
 
 ---
 
@@ -224,8 +284,8 @@ Implementations MUST raise a parse error for:
 1. Empty key: `=value`
 2. Missing value: `key=` followed by `}`, `]`, comma, or end of input
 3. Duplicate key in the same object
-4. Top-level scalar (a bare number, string, boolean, or null as the whole document)
-5. Top-level array followed by any other content (text or pairs after the closing `]`)
+4. Mixed top-level form: a `key=value` pair followed by a non-pair value, or a non-pair value followed by a `key=value` pair (see §2.4)
+5. Top-level array literal followed by any other content (text or pairs after the closing `]` of the literal — the literal is one element of the implicit array, and what follows must be a separator or EOF)
 6. Malformed number — bad underscore placement, invalid digit for radix, `+` prefix, uppercase radix prefix (`0X`/`0O`/`0B`), type suffix
 7. Unterminated string, raw string, or comment
 8. Unrecognized escape sequence in a regular string
@@ -247,3 +307,6 @@ These were open calls during spec drafting; recorded here so future changes are 
 6. **Control characters in regular strings** — disallowed; use escapes or raw strings.
 7. **Separator rule** — two items on the same physical line require a comma between them; newlines also act as separators. No per-container mode distinction (§5.3).
 8. **Serialize forms** — compact (no spaces around `=`/after `,`, no trailing commas) is the default canonical output; pretty mode is multi-line with spaces around `=` and no trailing commas, per §7.1.
+9. **Top-level scalars and array mode** (added in v2.0) — the top level is no longer restricted to `key=value` pairs. Any document whose first top-level element is not a `key=value` pair is parsed as an implicit array (`[]` omitted). Rationale: humans naturally write lists of values; forcing them to wrap in `{}` or use explicit `[...]` was unnecessary friction. Mixing `key=value` pairs with bare values at the top level remains an error — the first element decides the mode.
+10. **Empty input → `null`** (added in v2.0) — empty/whitespace-only/comments-only input parses to JSON `null` rather than `{}`. Rationale: now that the top level can legitimately be either an object or an array, defaulting empty input to `{}` arbitrarily picks one. `null` is the canonical "no data" marker and avoids the bias. As a consequence, empty containers (`{}`, `[]`) and `null` all serialize to the empty string and re-parse to `null` — round-trip for these is intentionally broken.
+11. **Top-level `{...}` and `[...]` are array elements, not wrappers** (added in v2.0) — under the new spec, braces and brackets at the top level always represent one element of the implicit top-level array. They are never silently stripped as document wrappers. This means `{a=1}` now parses to `[{"a": 1}]` and `[1,2,3]` now parses to `[[1, 2, 3]]`. Rationale: removes special-case parsing rules and makes the top-level grammar uniform.

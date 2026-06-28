@@ -41,6 +41,19 @@ debug = true
 log_level = "info"
 ```
 
+A JHON document doesn't have to be an object. If the first top-level element is anything other than a `key=value` pair, the whole document is treated as an array (with the surrounding `[]` omitted):
+
+```jhon
+// Array-mode document
+1
+2
+"haha"
+{a=4}
+// → [1, 2, "haha", {"a": 4}]
+```
+
+An empty document (empty string, whitespace-only, or comments-only) parses to `null`.
+
 ### Key rules (per SPEC.md)
 
 1. **Separators are commas OR newlines** — two items on the **same line** require a comma (SPEC §5.3). Spaces alone between items are an error.
@@ -49,7 +62,7 @@ log_level = "info"
 4. **Raw strings** — Rust-style `r"..."` / `R"..."` with optional `#` delimiters (`r#"..."#`, `r##"..."##`). No escape processing. May span multiple lines.
 5. **Numbers** — decimal (`42`, `1_000_000`), hex (`0xff`), octal (`0o777`), binary (`0b1010`), floats (`3.14`, `1.5e-3`). Underscores allowed between digits only. Radix prefixes are lowercase only.
 6. **Keys** — bare identifiers may contain any character except whitespace, `=`, `,`, `{ } [ ]`, `/`, `" '`, and `#`. Unicode letters, digits, hyphens, dots, and emoji are all valid in any position.
-7. **Top-level** — objects (braces optional) or arrays. Scalars at top level are errors.
+7. **Top-level** — object mode (a sequence of `key=value` pairs, braces optional) **or** array mode (any sequence of bare values; the surrounding `[]` is implicit). The first top-level element decides the mode; mixing pairs and bare values is an error. Top-level `{...}` and `[...]` are always single elements of the implicit array, never document wrappers. Empty input parses to `null`.
 8. **Duplicate keys** in the same object are an error.
 
 ## Raw string examples
@@ -89,7 +102,7 @@ Create a file with the `.jhon` extension. The extension automatically activates 
 
 ## Formatter
 
-The formatter wraps the canonical `@zjhken/jhon` parser/serializer. It produces **pretty** output per SPEC §7.1: multi-line, spaces around `=`, **newline-only separators (no commas)**, no trailing commas.
+The formatter wraps the canonical `@zjhken/jhon` parser/serializer. It produces **pretty** output per SPEC §7.1: multi-line, spaces around `=`, **newline-only separators (no commas)**, no trailing commas. The formatter handles both object-mode and array-mode documents (per SPEC §2) — array-mode documents format as one element per line with no surrounding `[]`.
 
 ### Formatting features
 

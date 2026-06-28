@@ -70,36 +70,46 @@ macro_rules! syntax_err {
 /// ```
 #[inline]
 pub fn parse(text: &str) -> Result<Value> {
-    // Early exit for empty input
-    let input = text.trim();
-    if input.is_empty() {
-        return Ok(Value::Object(Map::new()));
-    }
-
-    // Comments are stripped inline during parsing (skip_ws_and_comments) so
-    // that line information survives for the §5.3 separator rule.
-
-    let first = input.as_bytes()[0];
-
-    // Handle top-level objects wrapped in braces (from serialize)
-    if first == b'{' {
-        let mut parser = Parser::new(input.as_bytes());
-        let (value, _) = parser.parse_nested_object()?;
-        return Ok(value);
-    }
-
-    // Top-level array — must be the entire document (no trailing content).
-    if first == b'[' {
-        let mut parser = Parser::new(input.as_bytes());
-        let (value, end) = parser.parse_array()?;
-        let trailing = &input.as_bytes()[end..];
-        if !trailing.iter().all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
-            return Err(syntax_err!("Unexpected content after top-level array"));
+    // Empty input (including whitespace-only and comments-only) → JSON null.
+    // Per SPEC.md §2, this is the "Empty" form. The document has no elements,
+    // so it cannot be object mode or array mode.
+    {
+        let mut probe = Parser::new(text.as_bytes());
+        probe.skip_ws_and_comments();
+        if probe.current().is_none() {
+            return Ok(Value::Null);
         }
-        return Ok(value);
     }
 
-    parse_jhon_object(input)
+    let input = text.trim();
+
+    // Mode detection (SPEC.md §2): the first top-level element decides whether
+    // the document is parsed as an object (key=value pairs) or as an implicit
+    // array (bare values). `{...}` and `[...]` always begin array mode since
+    // they cannot start a `key=` pair. For anything else, attempt to parse a
+    // key and look ahead for `=`.
+    let mut detector = Parser::new(input.as_bytes());
+    detector.skip_ws_and_comments();
+    let first_byte = detector.current();
+    let object_mode = match first_byte {
+        None | Some(b'{') | Some(b'[') => false,
+        Some(_) => {
+            let mut probe = detector;
+            match probe.parse_key() {
+                Ok(_) => {
+                    probe.skip_ws_and_comments();
+                    probe.current() == Some(b'=')
+                }
+                Err(_) => false,
+            }
+        }
+    };
+
+    if object_mode {
+        parse_jhon_object(input)
+    } else {
+        parse_jhon_array(input)
+    }
 }
 
 /// Serialize a JSON Value into a compact JHON string
@@ -117,8 +127,23 @@ pub fn parse(text: &str) -> Result<Value> {
 #[inline]
 pub fn serialize(value: &Value) -> String {
     let mut result = String::new();
-    serialize_compact(value, &mut result);
+    serialize_top_compact(value, &mut result);
     result
+}
+
+/// Top-level dispatch. Per SPEC.md §2: empty containers and `null` serialize
+/// to empty string (the "Empty" form); top-level arrays emit bare (no `[]`).
+/// Nested values fall through to `serialize_compact` which preserves `[]` for
+/// nested arrays and `null` text for nested nulls.
+#[inline(always)]
+fn serialize_top_compact(value: &Value, result: &mut String) {
+    match value {
+        Value::Array(arr) if arr.is_empty() => {}
+        Value::Array(arr) => serialize_array_contents_compact(arr, result),
+        Value::Object(map) if map.is_empty() => {}
+        Value::Null => {}
+        _ => serialize_compact(value, result),
+    }
 }
 
 /// Serialize a JSON Value into a pretty-printed JHON string with custom indentation
@@ -135,8 +160,57 @@ pub fn serialize(value: &Value) -> String {
 /// ```
 pub fn serialize_pretty(value: &Value, indent: &str) -> String {
     let mut result = String::new();
-    serialize_pretty_with_depth(value, indent, 0, false, &mut result);
+    serialize_top_pretty(value, indent, &mut result);
     result
+}
+
+/// Top-level pretty dispatch. Mirrors `serialize_top_compact`: empty
+/// containers and `null` emit empty string; top-level arrays emit bare.
+#[inline(always)]
+fn serialize_top_pretty(value: &Value, indent: &str, result: &mut String) {
+    match value {
+        Value::Array(arr) if arr.is_empty() => {}
+        Value::Array(arr) => serialize_top_array_pretty(arr, indent, result),
+        Value::Object(map) if map.is_empty() => {}
+        Value::Null => {}
+        _ => serialize_pretty_with_depth(value, indent, 0, false, result),
+    }
+}
+
+/// Emit a top-level implicit array (no surrounding `[]`). Each element appears
+/// on its own line at column 0. Object and array literals as elements keep
+/// their braces/brackets since they're array elements, not the implicit
+/// top-level form.
+fn serialize_top_array_pretty(arr: &[Value], indent: &str, result: &mut String) {
+    let mut first = true;
+    for value in arr {
+        if !first {
+            result.push('\n');
+        }
+        first = false;
+        match value {
+            Value::Object(map) if map.is_empty() => result.push_str("{}"),
+            Value::Object(map) => {
+                // Object element: emit with braces, body at indent 1, no
+                // leading indent on the opening brace (column 0).
+                result.push_str("{\n");
+                let mut first_pair = true;
+                for (k, v) in map {
+                    if !first_pair {
+                        result.push('\n');
+                    }
+                    first_pair = false;
+                    result.push_str(indent);
+                    serialize_key(k, result);
+                    result.push_str(" = ");
+                    serialize_pretty_with_depth(v, indent, 1, false, result);
+                }
+                result.push('\n');
+                result.push('}');
+            }
+            _ => serialize_pretty_with_depth(value, indent, 0, false, result),
+        }
+    }
 }
 
 // =============================================================================
@@ -1010,6 +1084,46 @@ fn parse_jhon_object(input: &str) -> Result<Value> {
 }
 
 
+fn parse_jhon_array(input: &str) -> Result<Value> {
+    let mut parser = Parser::new(input.as_bytes());
+    let mut elements = Vec::new();
+
+    parser.skip_ws_and_comments();
+
+    while parser.pos < parser.input.len() {
+        // Reject `key=value` pairs mixed into array mode. After a value is
+        // parsed, an immediately following `=` means the user wrote a pair
+        // after a bare value — that's a syntax error per SPEC.md §2.
+        if parser.current() == Some(b'=') {
+            return Err(syntax_err!(
+                "Cannot mix key=value pairs and bare values at top level"
+            ));
+        }
+
+        if let Some(value) = parser.parse_value()? {
+            elements.push(value);
+        }
+
+        // Reject mix at the value-position level too: parse_value rejects bare
+        // identifiers, so `1\na=2` errors with "Unexpected character" at `a`.
+        // The dedicated `=` check above catches `[1]=2`-style mix attempts.
+
+        let (saw_newline, saw_comma) = parser.skip_inter_item_separator();
+
+        if parser.pos >= parser.input.len() {
+            break;
+        }
+        if !saw_newline && !saw_comma {
+            return Err(syntax_err!(
+                "items on the same line must be separated by a comma"
+            ));
+        }
+    }
+
+    Ok(Value::Array(elements))
+}
+
+
 // =============================================================================
 // Optimized Serializer
 // =============================================================================
@@ -1055,6 +1169,12 @@ fn serialize_object_compact(map: &Map<String, Value>, result: &mut String) {
 #[inline(always)]
 fn serialize_array_compact(arr: &[Value], result: &mut String) {
     result.push('[');
+    serialize_array_contents_compact(arr, result);
+    result.push(']');
+}
+
+#[inline(always)]
+fn serialize_array_contents_compact(arr: &[Value], result: &mut String) {
     let mut first = true;
     for value in arr {
         if !first {
@@ -1072,7 +1192,6 @@ fn serialize_array_compact(arr: &[Value], result: &mut String) {
             _ => serialize_compact(value, result),
         }
     }
-    result.push(']');
 }
 
 #[inline(always)]
@@ -1261,7 +1380,22 @@ fn serialize_object_pretty(
 
 fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize, result: &mut String) {
     result.push_str("[\n");
+    serialize_array_contents_pretty(arr, indent, depth, result);
+    result.push('\n');
+    for _ in 0..depth {
+        result.push_str(indent);
+    }
+    result.push(']');
+}
 
+/// Emit the contents of an array without the surrounding `[]`. Used for
+/// top-level implicit arrays per SPEC.md §2 (array mode).
+fn serialize_array_contents_pretty(
+    arr: &[Value],
+    indent: &str,
+    depth: usize,
+    result: &mut String,
+) {
     let mut first = true;
     for value in arr {
         if !first {
@@ -1278,12 +1412,6 @@ fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize, result: &mu
             serialize_pretty_with_depth(value, indent, depth + 1, false, result);
         }
     }
-
-    result.push('\n');
-    for _ in 0..depth {
-        result.push_str(indent);
-    }
-    result.push(']');
 }
 
 fn needs_quoting(s: &str) -> bool {
@@ -1320,18 +1448,18 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn empty_input_parses_to_empty_object() {
-        assert_eq!(parse("").unwrap(), json!({}));
+    fn empty_input_parses_to_null() {
+        assert_eq!(parse("").unwrap(), json!(null));
     }
 
     #[test]
-    fn whitespace_only_input_parses_to_empty_object() {
-        assert_eq!(parse("   \n\t\r\n  ").unwrap(), json!({}));
+    fn whitespace_only_input_parses_to_null() {
+        assert_eq!(parse("   \n\t\r\n  ").unwrap(), json!(null));
     }
 
     #[test]
-    fn comments_only_input_parses_to_empty_object() {
-        assert_eq!(parse("// just a comment\n/* block */").unwrap(), json!({}));
+    fn comments_only_input_parses_to_null() {
+        assert_eq!(parse("// just a comment\n/* block */").unwrap(), json!(null));
     }
 
     #[test]
@@ -1343,41 +1471,144 @@ mod tests {
     }
 
     #[test]
-    fn top_level_object_with_braces() {
+    fn top_level_object_with_braces_is_single_element_array() {
+        // Per SPEC.md §2: top-level `{...}` is always one element of the
+        // implicit top-level array, never a document wrapper.
         assert_eq!(
             parse(r#"{name="x",port=80}"#).unwrap(),
-            json!({"name": "x", "port": 80})
+            json!([{"name": "x", "port": 80}])
         );
     }
 
     #[test]
-    fn top_level_array_alone() {
-        assert_eq!(parse("[1, 2, 3]").unwrap(), json!([1, 2, 3]));
+    fn top_level_explicit_array_is_single_element_array() {
+        // Per SPEC.md §2: top-level `[...]` is always one element of the
+        // implicit top-level array, never a document wrapper.
+        assert_eq!(parse("[1, 2, 3]").unwrap(), json!([[1, 2, 3]]));
     }
 
     #[test]
-    fn top_level_scalar_number_is_error() {
-        assert!(parse("42").is_err());
+    fn top_level_scalar_number() {
+        assert_eq!(parse("42").unwrap(), json!([42]));
     }
 
     #[test]
-    fn top_level_scalar_string_is_error() {
-        assert!(parse(r#""hello""#).is_err());
+    fn top_level_scalar_string() {
+        assert_eq!(parse(r#""hello""#).unwrap(), json!(["hello"]));
     }
 
     #[test]
-    fn top_level_scalar_boolean_is_error() {
-        assert!(parse("true").is_err());
+    fn top_level_scalar_boolean() {
+        assert_eq!(parse("true").unwrap(), json!([true]));
+        assert_eq!(parse("false").unwrap(), json!([false]));
     }
 
     #[test]
-    fn top_level_scalar_null_is_error() {
-        assert!(parse("null").is_err());
+    fn top_level_scalar_null() {
+        assert_eq!(parse("null").unwrap(), json!([null]));
     }
 
     #[test]
-    fn top_level_array_followed_by_pairs_is_error() {
+    fn top_level_multiple_scalars_newline_separated() {
+        assert_eq!(parse("1\n2\n3").unwrap(), json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn top_level_multiple_scalars_comma_separated() {
+        assert_eq!(parse(r#"1,2,"haha""#).unwrap(), json!([1, 2, "haha"]));
+    }
+
+    #[test]
+    fn top_level_mixed_scalars_and_object() {
+        // The example from the spec change request.
+        assert_eq!(
+            parse("1\n2\n\"haha\"\n{a=4}").unwrap(),
+            json!([1, 2, "haha", {"a": 4}])
+        );
+    }
+
+    #[test]
+    fn top_level_multiple_objects() {
+        assert_eq!(
+            parse("{a=1}\n{b=2}").unwrap(),
+            json!([{"a": 1}, {"b": 2}])
+        );
+    }
+
+    #[test]
+    fn top_level_keyword_as_key_is_object_mode() {
+        // `true`, `false`, `null` in key position are strings, so `true=1`
+        // is object mode, not array mode.
+        assert_eq!(parse("true=1").unwrap(), json!({"true": 1}));
+    }
+
+    #[test]
+    fn top_level_numeric_key_is_object_mode() {
+        // Bare identifiers can contain digits, so `42="x"` is object mode.
+        assert_eq!(parse("42=\"x\"").unwrap(), json!({"42": "x"}));
+    }
+
+    #[test]
+    fn top_level_quoted_string_key_is_object_mode() {
+        assert_eq!(parse(r#""key"="value""#).unwrap(), json!({"key": "value"}));
+    }
+
+    #[test]
+    fn top_level_mixed_pair_then_scalar_is_error() {
+        assert!(parse("a=1\n2").is_err());
+    }
+
+    #[test]
+    fn top_level_mixed_scalar_then_pair_is_error() {
+        assert!(parse("1\na=2").is_err());
+    }
+
+    #[test]
+    fn top_level_array_then_pair_is_error() {
         assert!(parse("[1, 2] key=value").is_err());
+    }
+
+    #[test]
+    fn serialize_top_level_array_compact() {
+        assert_eq!(serialize(&json!([1, 2, "haha"])), r#"1,2,"haha""#);
+    }
+
+    #[test]
+    fn serialize_top_level_array_pretty() {
+        assert_eq!(
+            serialize_pretty(&json!([1, 2, "haha"]), "  "),
+            "1\n2\n\"haha\""
+        );
+    }
+
+    #[test]
+    fn serialize_top_level_array_with_object() {
+        assert_eq!(serialize(&json!([1, {"a": 2}])), "1,{a=2}");
+    }
+
+    #[test]
+    fn serialize_empty_object_to_empty_string() {
+        assert_eq!(serialize(&json!({})), "");
+    }
+
+    #[test]
+    fn serialize_empty_array_to_empty_string() {
+        assert_eq!(serialize(&json!([])), "");
+    }
+
+    #[test]
+    fn serialize_top_level_null_to_empty_string() {
+        assert_eq!(serialize(&json!(null)), "");
+    }
+
+    #[test]
+    fn serialize_nested_null_preserved() {
+        assert_eq!(serialize(&json!({"a": null})), "a=null");
+    }
+
+    #[test]
+    fn serialize_nested_array_preserved() {
+        assert_eq!(serialize(&json!({"a": [1, 2, 3]})), "a=[1,2,3]");
     }
 
     // =========================================================================
@@ -1759,7 +1990,8 @@ mod tests {
 
     #[test]
     fn trailing_comma_in_braced_object() {
-        assert_eq!(parse("{a=1, b=2,}").unwrap(), json!({"a": 1, "b": 2}));
+        // Per SPEC.md §2: top-level `{...}` is a single-element array.
+        assert_eq!(parse("{a=1, b=2,}").unwrap(), json!([{"a": 1, "b": 2}]));
     }
 
     #[test]
@@ -1857,8 +2089,9 @@ mod tests {
 
     #[test]
     fn compact_serialize_top_level_array() {
+        // Top-level arrays serialize bare (no surrounding []).
         let value = json!([{"a": 1}, {"b": 2}]);
-        assert_eq!(serialize(&value), r#"[{a=1},{b=2}]"#);
+        assert_eq!(serialize(&value), r#"{a=1},{b=2}"#);
     }
 
     #[test]
@@ -1888,10 +2121,11 @@ mod tests {
 
     #[test]
     fn pretty_serialize_array_no_trailing_commas() {
+        // Top-level arrays serialize bare: one element per line, no [].
         let value = json!([1, 2, 3, "hello"]);
         assert_eq!(
             serialize_pretty(&value, "  "),
-            "[\n  1\n  2\n  3\n  \"hello\"\n]"
+            "1\n2\n3\n\"hello\""
         );
     }
 

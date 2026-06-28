@@ -13,48 +13,87 @@ from jhon import JhonParseError, parse, serialize, serialize_pretty
 # =============================================================================
 
 
-def test_empty_input_parses_to_empty_object():
-    assert parse("") == {}
+def test_empty_input_parses_to_null():
+    assert parse("") is None
 
 
-def test_whitespace_only_input_parses_to_empty_object():
-    assert parse("   \n\t\r\n  ") == {}
+def test_whitespace_only_input_parses_to_null():
+    assert parse("   \n\t\r\n  ") is None
 
 
-def test_comments_only_input_parses_to_empty_object():
-    assert parse("// just a comment\n/* block */") == {}
+def test_comments_only_input_parses_to_null():
+    assert parse("// just a comment\n/* block */") is None
 
 
 def test_top_level_object_without_braces():
     assert parse('name="x",port=80') == {"name": "x", "port": 80}
 
 
-def test_top_level_object_with_braces():
-    assert parse('{name="x",port=80}') == {"name": "x", "port": 80}
+def test_top_level_object_with_braces_is_single_element_array():
+    # Per SPEC §2: top-level `{...}` is one element of the implicit array.
+    assert parse('{name="x",port=80}') == [{"name": "x", "port": 80}]
 
 
-def test_top_level_array_alone():
-    assert parse("[1, 2, 3]") == [1, 2, 3]
+def test_top_level_explicit_array_is_single_element_array():
+    # Per SPEC §2: top-level `[...]` is one element of the implicit array.
+    assert parse("[1, 2, 3]") == [[1, 2, 3]]
 
 
-def test_top_level_scalar_number_is_error():
+def test_top_level_scalar_number():
+    assert parse("42") == [42]
+
+
+def test_top_level_scalar_string():
+    assert parse('"hello"') == ["hello"]
+
+
+def test_top_level_scalar_boolean():
+    assert parse("true") == [True]
+    assert parse("false") == [False]
+
+
+def test_top_level_scalar_null():
+    assert parse("null") == [None]
+
+
+def test_top_level_multiple_scalars_newline_separated():
+    assert parse("1\n2\n3") == [1, 2, 3]
+
+
+def test_top_level_multiple_scalars_comma_separated():
+    assert parse('1,2,"haha"') == [1, 2, "haha"]
+
+
+def test_top_level_mixed_scalars_and_object():
+    # The example from the spec change request.
+    assert parse('1\n2\n"haha"\n{a=4}') == [1, 2, "haha", {"a": 4}]
+
+
+def test_top_level_multiple_objects():
+    assert parse("{a=1}\n{b=2}") == [{"a": 1}, {"b": 2}]
+
+
+def test_top_level_keyword_as_key_is_object_mode():
+    # `true`, `false`, `null` in key position are strings.
+    assert parse("true=1") == {"true": 1}
+
+
+def test_top_level_numeric_key_is_object_mode():
+    assert parse('42="x"') == {"42": "x"}
+
+
+def test_top_level_quoted_string_key_is_object_mode():
+    assert parse('"key"="value"') == {"key": "value"}
+
+
+def test_top_level_mixed_pair_then_scalar_is_error():
     with pytest.raises(JhonParseError):
-        parse("42")
+        parse("a=1\n2")
 
 
-def test_top_level_scalar_string_is_error():
+def test_top_level_mixed_scalar_then_pair_is_error():
     with pytest.raises(JhonParseError):
-        parse('"hello"')
-
-
-def test_top_level_scalar_boolean_is_error():
-    with pytest.raises(JhonParseError):
-        parse("true")
-
-
-def test_top_level_scalar_null_is_error():
-    with pytest.raises(JhonParseError):
-        parse("null")
+        parse("1\na=2")
 
 
 def test_top_level_array_followed_by_pairs_is_error():
@@ -323,11 +362,13 @@ def test_trailing_comma_at_top_level():
 
 
 def test_trailing_comma_in_braced_object():
-    assert parse("{a=1, b=2,}") == {"a": 1, "b": 2}
+    # Per SPEC §2: top-level `{...}` is a single-element array.
+    assert parse("{a=1, b=2,}") == [{"a": 1, "b": 2}]
 
 
 def test_trailing_comma_in_array():
-    assert parse("[1, 2, 3,]") == [1, 2, 3]
+    # Per SPEC §2: top-level `[...]` is a single-element array.
+    assert parse("[1, 2, 3,]") == [[1, 2, 3]]
 
 
 def test_whitespace_around_comma_is_insignificant():
@@ -400,7 +441,23 @@ def test_compact_serialize_nested_object():
 
 
 def test_compact_serialize_top_level_array():
-    assert serialize([{"a": 1}, {"b": 2}]) == "[{a=1},{b=2}]"
+    # Top-level arrays serialize bare (no surrounding []).
+    assert serialize([{"a": 1}, {"b": 2}]) == "{a=1},{b=2}"
+
+
+def test_serialize_top_level_array_with_object():
+    assert serialize([1, {"a": 2}]) == "1,{a=2}"
+
+
+def test_serialize_empty_containers_and_null_to_empty_string():
+    assert serialize({}) == ""
+    assert serialize([]) == ""
+    assert serialize(None) == ""
+
+
+def test_serialize_nested_null_and_array_preserved():
+    assert serialize({"a": None}) == "a=null"
+    assert serialize({"a": [1, 2, 3]}) == "a=[1,2,3]"
 
 
 def test_compact_serialize_has_no_trailing_comma():
@@ -418,7 +475,8 @@ def test_pretty_serialize_nested_object():
 
 
 def test_pretty_serialize_array_no_trailing_commas():
-    assert serialize_pretty([1, 2, 3]) == "[\n  1\n  2\n  3\n]"
+    # Top-level arrays serialize bare: one element per line, no [].
+    assert serialize_pretty([1, 2, 3]) == "1\n2\n3"
 
 
 def test_round_trip_compact_preserves_value():

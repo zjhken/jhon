@@ -83,7 +83,15 @@ interface AstBase {
 
 export interface AstDocument extends AstBase {
   kind: 'document';
-  body: AstObject | AstArray;
+  /**
+   * The document body. Per SPEC §2 this can be:
+   *   - AstObject: object-mode document (top-level key=value pairs).
+   *   - AstArray: array-mode document (bare top-level values).
+   *   - AstNull: empty input (the "Empty" form, parses to JSON null).
+   *   - Other AstValue variants: a top-level scalar (rare; round-trips
+   *     through array mode, e.g. serialize(42) → "42" → parse → [42]).
+   */
+  body: AstValue;
 }
 
 export interface AstObject extends AstBase {

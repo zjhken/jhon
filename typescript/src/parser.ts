@@ -95,31 +95,27 @@ export class Parser {
 
     const first = this.input[this.pos];
 
-    if (first === '{') {
-      const body = this.parseNestedObject();
-      const doc = this.finalizeDocument(body);
-      attachComments(doc, this.comments);
-      return doc;
-    }
-
-    if (first === '[') {
-      const body = this.parseArray();
-      // Trailing content after a top-level array is an error.
-      this.skipWsAndComments();
-      if (this.pos < this.length) {
-        throw this.syntaxErr('unexpected content after top-level array');
+    // Mode detection (SPEC §2): the first top-level element decides whether
+    // the document is parsed as an object (key=value pairs) or as an implicit
+    // array (bare values). `{...}` and `[...]` always begin array mode.
+    let objectMode = false;
+    if (first !== '{' && first !== '[') {
+      const savedPos = this.pos;
+      const savedLine = this.line;
+      const savedColumn = this.column;
+      try {
+        this.parseKey();
+        this.skipWsAndComments();
+        if (this.current() === '=') objectMode = true;
+      } catch {
+        // Not a valid key — fall through to array mode.
       }
-      const doc = this.finalizeDocument(body);
-      attachComments(doc, this.comments);
-      return doc;
+      this.pos = savedPos;
+      this.line = savedLine;
+      this.column = savedColumn;
     }
 
-    // Bare top-level object form. parseJhonObject reads the first key; if the
-    // input is actually a top-level scalar (e.g. `42` or `r"..."`), it will
-    // fail with "expected '='" when no `=` follows the bareword. This matches
-    // Rust's behavior — there's no special "top-level scalar" rejection; the
-    // error surfaces naturally from the key/value grammar.
-    const body = this.parseJhonObject();
+    const body = objectMode ? this.parseJhonObject() : this.parseJhonArray();
     const doc = this.finalizeDocument(body);
     attachComments(doc, this.comments);
     return doc;
@@ -865,17 +861,55 @@ export class Parser {
     };
   }
 
+  /**
+   * Top-level implicit array form (no surrounding []). Per SPEC §2: when the
+   * first top-level element is not a key=value pair, the whole document is
+   * treated as an array. Mixing pairs into array mode is an error.
+   */
+  private parseJhonArray(): AstArray {
+    const start = this.here();
+    const elements: AstValue[] = [];
+
+    this.skipWsAndComments();
+
+    while (this.pos < this.length) {
+      if (this.current() === '=') {
+        throw this.syntaxErr(
+          'cannot mix key=value pairs and bare values at top level'
+        );
+      }
+      elements.push(this.parseValue());
+
+      const { sawNewline, sawComma } = this.skipInterItemSeparator();
+
+      if (this.pos >= this.length) {
+        break;
+      }
+      if (!sawNewline && !sawComma) {
+        throw this.syntaxErr('items on the same line must be separated by a comma');
+      }
+    }
+
+    return {
+      kind: 'array',
+      elements,
+      innerComments: [],
+      range: this.rangeFrom(start),
+      leadingComments: [],
+      trailingComments: [],
+    };
+  }
+
   // ------------------------------------------------------------------------
   // Document finalization
   // ------------------------------------------------------------------------
 
   private buildEmptyDocument(): AstDocument {
+    // Per SPEC §2: empty/whitespace-only/comments-only input parses to a
+    // JSON null (the "Empty" form), distinct from {} and [].
     const start = this.here();
-    const empty: AstObject = {
-      kind: 'object',
-      properties: [],
-      wrapped: false,
-      innerComments: [],
+    const empty: AstNull = {
+      kind: 'null',
       range: { start, end: start },
       leadingComments: [],
       trailingComments: [],
@@ -889,7 +923,7 @@ export class Parser {
     };
   }
 
-  private finalizeDocument(body: AstObject | AstArray): AstDocument {
+  private finalizeDocument(body: AstValue): AstDocument {
     return {
       kind: 'document',
       body,

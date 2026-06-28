@@ -19,11 +19,11 @@ The Rust impl at [`rust/`](./rust/) is the spec reference; the other four implem
 
 | Directory | Language | Package |
 |-----------|----------|---------|
-| [`rust/`](./rust/) | Rust 2024 | `jhon` on crates.io (v2.0.0) |
+| [`rust/`](./rust/) | Rust 2024 | `jhon` on crates.io (v2.1.0) |
 | [`golang/`](./golang/) | Go 1.21 | `github.com/jhon-lang/jhon` |
 | [`java/`](./java/) | Java 21 | `dev.jhon:jhon` (Maven) |
 | [`python/`](./python/) | Python 3.12 | `jhon` on PyPI |
-| [`typescript/`](./typescript/) | TypeScript 5 / ES2022 | `@zjhken/jhon` on npm (v2.0.0) |
+| [`typescript/`](./typescript/) | TypeScript 5 / ES2022 | `@zjhken/jhon` on npm (v2.1.0) |
 | [`vscode-ext/`](./vscode-ext/) | TypeScript | `JHON Language Support` on the VSCode Marketplace |
 
 ## Quick start (TypeScript)
@@ -97,6 +97,35 @@ database = {
 }
 ```
 
+### Top-level values and the implicit array
+
+A JHON document doesn't have to be an object. If the first top-level element is anything other than a `key=value` pair, the whole document is treated as an array (with the surrounding `[]` omitted):
+
+```jhon
+// All of these are array-mode documents:
+
+42                                    // → [42]
+"haha"                                // → ["haha"]
+
+1
+2
+"haha"
+{a=4}                                 // → [1, 2, "haha", {"a": 4}]
+```
+
+Top-level `{...}` and `[...]` are always single elements of the implicit array (never document wrappers):
+
+```jhon
+{a=1}                                 // → [{"a": 1}]    (NOT {"a": 1})
+[1, 2, 3]                             // → [[1, 2, 3]]   (NOT [1, 2, 3])
+```
+
+An empty document (empty string, whitespace-only, or comments-only) parses to `null` — distinct from `{}` and `[]`, and the canonical "no data" marker.
+
+Mixing `key=value` pairs with bare values at the top level is a syntax error (`a=1\n2`); the first element decides the mode for the whole document.
+
+
+
 ### Comments
 
 ```jhon
@@ -130,7 +159,7 @@ regex = r"\d+\w+\s+"
 | Go | `jhon.Parse(s) (Value, error)` | `jhon.Serialize(v) string` | `jhon.SerializePretty(v, "  ") string` |
 | Java | `Jhon.parse(s) throws JhonParseException` | `Jhon.serialize(o) String` | `Jhon.serializePretty(o, "  ") String` |
 | Python | `jhon.parse(s) -> Any` | `jhon.serialize(v) -> str` | `jhon.serialize_pretty(v, "  ") -> str` |
-| TypeScript | `parse(s): JhonObject` | `serialize(v): string` | `serializePretty(v): string` |
+| TypeScript | `parse(s): JhonValue` | `serialize(v): string` | `serializePretty(v): string` |
 
 All five raise a typed error (with 1-based line/column) when the input violates SPEC §8.
 
@@ -176,7 +205,8 @@ serde = { version = "1", features = ["derive"] }
 | Underscore digit separators | No | Yes |
 | Multi-line strings | No | Yes (raw strings) |
 | Duplicate keys | Allowed | **Error** |
-| Top-level scalar | Allowed | **Error** |
+| Top-level scalar | Allowed | Allowed (parses to a single-element array) |
+| Empty document | n/a | Parses to `null` |
 
 ## Performance
 

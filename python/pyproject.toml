@@ -1,6 +1,6 @@
 [project]
 name = "jhon"
-version = "2.0.0"
+version = "2.1.0"
 description = "JHON - JinHui's Object Notation: A configuration language parser and serializer"
 readme = "README.md"
 authors = [
