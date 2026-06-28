@@ -1,6 +1,6 @@
 {
   "name": "JHON-lang-support",
-  "displayName": "JHON (JinHui's Object Notation) Language Support",
+  "displayName": "JHON (JinHui's Object Notation) Language Support.",
   "description": "Syntax highlighting, formatting, and diagnostics for JHON (JinHui's Object Notation)",
   "version": "2.1.0",
   "publisher": "JinhuiZhang",
