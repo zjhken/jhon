@@ -110,11 +110,10 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.107.0",
     "esbuild": "^0.23.0",
-    "typescript": "^5.5.0"
-  },
-  "dependencies": {
+    "typescript": "^5.5.0",
     "@zjhken/jhon": "link:../typescript"
   },
+  "dependencies": {},
   "scripts": {
     "vscode:prepublish": "bun run compile",
     "compile": "tsc -p ./ --noEmit && bun run bundle",
