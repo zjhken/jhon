@@ -111,7 +111,7 @@
     "@types/vscode": "^1.107.0",
     "esbuild": "^0.23.0",
     "typescript": "^5.5.0",
-    "@zjhken/jhon": "link:../typescript"
+    "@zjhken/jhon": "file:../typescript"
   },
   "dependencies": {},
   "scripts": {
