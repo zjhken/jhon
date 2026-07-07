@@ -44,6 +44,18 @@ export interface SerializePrettyOptions extends SerializeOptions {
    * @default "  "
    */
   indent?: string;
+  /**
+   * Maximum line width (in characters) for inlining a non-empty container.
+   * - `0` or `undefined` (default): every non-empty container renders
+   *   multi-line (legacy behavior, comment-preserving).
+   * - `>0`: a container whose single-line form fits within this width is
+   *   emitted inline as `{ k = v, ... }` / `[ a, b, ... ]`. Containers that
+   *   don't fit as a whole but whose joined children do fit use a 3-line
+   *   wrapper. Otherwise expands multi-line with one child per line.
+   *   Note: inline mode does not preserve comments.
+   * @default 0
+   */
+  maxInlineWidth?: number;
 }
 
 // ============================================================================

@@ -90,6 +90,13 @@
           "default": false,
           "description": "Sort object keys alphabetically (default preserves insertion order per SPEC)"
         },
+        "jhon.format.maxInlineWidth": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 320,
+          "description": "Maximum width (in characters) of an inline container before falling back to multi-line. 0 = disabled (always multi-line)."
+        },
         "jhon.diagnostics.enable": {
           "type": "boolean",
           "default": true,

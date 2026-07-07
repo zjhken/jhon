@@ -62,9 +62,26 @@ public final class Jhon {
     }
 
     public static String serializePretty(Object value, String indent) {
+        return serializePretty(value, indent, 0);
+    }
+
+    /**
+     * Pretty-print with short-container inlining. When {@code maxInlineWidth > 0}
+     * a non-empty container whose single-line form fits within that many
+     * characters is emitted inline as {@code { k = v, ... }} /
+     * {@code [ a, b, ... ]}. Containers whose joined children fit but the
+     * whole doesn't use a 3-line wrapper. Otherwise expands multi-line.
+     * {@code maxInlineWidth == 0} preserves the legacy always-multi-line
+     * behavior.
+     */
+    public static String serializePretty(Object value, String indent, int maxInlineWidth) {
         if (indent == null || indent.isEmpty()) indent = "  ";
         StringBuilder sb = new StringBuilder();
-        serializeTopPretty(value, indent, sb);
+        if (maxInlineWidth > 0) {
+            serializeTopPrettyInline(value, indent, maxInlineWidth, sb);
+        } else {
+            serializeTopPretty(value, indent, sb);
+        }
         return sb.toString();
     }
 
@@ -901,6 +918,201 @@ public final class Jhon {
         sb.append('\n');
         for (int i = 0; i < depth; i++) sb.append(indent);
         sb.append(']');
+    }
+
+    // ==================================================================================
+    // Inline-aware pretty printer (`maxInlineWidth > 0` mode).
+    //
+    // Mirrors the Rust `render_pretty_inline` path. Short containers render as
+    // `{ k = v, ... }` / `[ a, b, ... ]`; medium containers use a 3-line
+    // wrapper with joined children on one line; long containers expand one
+    // child per line. Legacy `serializePretty` is unchanged because the
+    // public 2-arg overload routes through `maxInlineWidth == 0`.
+    // ==================================================================================
+
+    static void serializeTopPrettyInline(Object v, String indent, int maxInlineWidth, StringBuilder sb) {
+        if (v == null) return;
+        if (v instanceof ArrayList) {
+            ArrayList<?> arr = (ArrayList<?>) v;
+            if (arr.isEmpty()) return;
+            boolean first = true;
+            for (Object el : arr) {
+                if (!first) sb.append('\n');
+                first = false;
+                renderPrettyInline(el, indent, 0, maxInlineWidth, sb);
+            }
+            return;
+        }
+        if (v instanceof Map) {
+            Map<?, ?> obj = (Map<?, ?>) v;
+            if (obj.isEmpty()) return;
+            boolean first = true;
+            for (Map.Entry<?, ?> e : obj.entrySet()) {
+                if (!first) sb.append('\n');
+                first = false;
+                serializeKey((String) e.getKey(), sb);
+                sb.append(" = ");
+                renderPrettyInline(e.getValue(), indent, 0, maxInlineWidth, sb);
+            }
+            return;
+        }
+        renderPrettyInline(v, indent, 0, maxInlineWidth, sb);
+    }
+
+    static void renderPrettyInline(Object v, String indent, int depth, int maxInlineWidth, StringBuilder sb) {
+        // Scalars
+        if (v == null) { sb.append("null"); return; }
+        if (v instanceof String) { serializeString((String) v, sb); return; }
+        if (v instanceof Boolean) { sb.append(((Boolean) v) ? "true" : "false"); return; }
+        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
+            sb.append(((Number) v).longValue()); return;
+        }
+        if (v instanceof BigInteger) { sb.append(v.toString()); return; }
+        if (v instanceof Double || v instanceof Float) {
+            double d = ((Number) v).doubleValue();
+            if (d == Math.rint(d) && d >= -9.2e18 && d <= 9.2e18) {
+                sb.append((long) d);
+            } else {
+                sb.append(d);
+            }
+            return;
+        }
+
+        if (v instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> obj = (Map<String, Object>) v;
+            if (obj.isEmpty()) { sb.append("{}"); return; }
+            String inline = inlineValue(v);
+            if (inline.length() <= maxInlineWidth) { sb.append(inline); return; }
+            String joined = joinedObjectChildren(obj);
+            if (!joined.isEmpty() && joined.length() <= maxInlineWidth) {
+                sb.append('{').append('\n');
+                appendIndent(sb, indent, depth + 1);
+                sb.append(joined);
+                sb.append('\n');
+                appendIndent(sb, indent, depth);
+                sb.append('}');
+                return;
+            }
+            // wrapper_multi
+            sb.append('{');
+            for (Map.Entry<String, Object> e : obj.entrySet()) {
+                sb.append('\n');
+                appendIndent(sb, indent, depth + 1);
+                serializeKey(e.getKey(), sb);
+                sb.append(" = ");
+                renderPrettyInline(e.getValue(), indent, depth + 1, maxInlineWidth, sb);
+            }
+            sb.append('\n');
+            appendIndent(sb, indent, depth);
+            sb.append('}');
+            return;
+        }
+
+        if (v instanceof ArrayList) {
+            ArrayList<?> arr = (ArrayList<?>) v;
+            if (arr.isEmpty()) { sb.append("[]"); return; }
+            String inline = inlineValue(v);
+            if (inline.length() <= maxInlineWidth) { sb.append(inline); return; }
+            String joined = joinedArrayChildren(arr);
+            if (!joined.isEmpty() && joined.length() <= maxInlineWidth) {
+                sb.append('[').append('\n');
+                appendIndent(sb, indent, depth + 1);
+                sb.append(joined);
+                sb.append('\n');
+                appendIndent(sb, indent, depth);
+                sb.append(']');
+                return;
+            }
+            // wrapper_multi
+            sb.append('[');
+            for (Object el : arr) {
+                sb.append('\n');
+                appendIndent(sb, indent, depth + 1);
+                renderPrettyInline(el, indent, depth + 1, maxInlineWidth, sb);
+            }
+            sb.append('\n');
+            appendIndent(sb, indent, depth);
+            sb.append(']');
+            return;
+        }
+    }
+
+    static void appendIndent(StringBuilder sb, String indent, int n) {
+        for (int i = 0; i < n; i++) sb.append(indent);
+    }
+
+    static String inlineValue(Object v) {
+        if (v == null) return "null";
+        if (v instanceof String) {
+            StringBuilder sb = new StringBuilder();
+            serializeString((String) v, sb);
+            return sb.toString();
+        }
+        if (v instanceof Boolean) return ((Boolean) v) ? "true" : "false";
+        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
+            return Long.toString(((Number) v).longValue());
+        }
+        if (v instanceof BigInteger) return v.toString();
+        if (v instanceof Double || v instanceof Float) {
+            double d = ((Number) v).doubleValue();
+            if (d == Math.rint(d) && d >= -9.2e18 && d <= 9.2e18) {
+                return Long.toString((long) d);
+            }
+            return Double.toString(d);
+        }
+        if (v instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> obj = (Map<String, Object>) v;
+            if (obj.isEmpty()) return "{}";
+            StringBuilder sb = new StringBuilder("{ ");
+            boolean first = true;
+            for (Map.Entry<String, Object> e : obj.entrySet()) {
+                if (!first) sb.append(", ");
+                first = false;
+                serializeKey(e.getKey(), sb);
+                sb.append(" = ").append(inlineValue(e.getValue()));
+            }
+            sb.append(" }");
+            return sb.toString();
+        }
+        if (v instanceof ArrayList) {
+            ArrayList<?> arr = (ArrayList<?>) v;
+            if (arr.isEmpty()) return "[]";
+            StringBuilder sb = new StringBuilder("[ ");
+            boolean first = true;
+            for (Object el : arr) {
+                if (!first) sb.append(", ");
+                first = false;
+                sb.append(inlineValue(el));
+            }
+            sb.append(" ]");
+            return sb.toString();
+        }
+        return "";
+    }
+
+    static String joinedObjectChildren(Map<String, Object> obj) {
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String, Object> e : obj.entrySet()) {
+            if (!first) sb.append(", ");
+            first = false;
+            serializeKey(e.getKey(), sb);
+            sb.append(" = ").append(inlineValue(e.getValue()));
+        }
+        return sb.toString();
+    }
+
+    static String joinedArrayChildren(ArrayList<?> arr) {
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        for (Object el : arr) {
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append(inlineValue(el));
+        }
+        return sb.toString();
     }
 
     static void serializeKey(String key, StringBuilder sb) {

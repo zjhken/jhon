@@ -791,6 +791,58 @@ func TestPrettySerializeNestedObject(t *testing.T) {
 	}
 }
 
+func TestPrettySerializeDeeplyNested(t *testing.T) {
+	// Mixed nesting stress: arrays of objects containing arrays (some with
+	// nested objects), deep object chains, arrays of arrays with objects.
+	// Uses the new inline-short mode (MaxInlineWidth: 44, tab indent).
+	b1Only := func() Array { return Array{"c1"} }
+	b1WithObj := func() Array {
+		return Array{"c1", Object{"d1": int64(4)}}
+	}
+	value := Object{
+		"a1": Array{
+			Object{"b1": b1Only()},
+			Object{"b1": b1WithObj()},
+			Object{"b1": b1Only()},
+			Object{"b1": b1Only()},
+			Object{"b1": b1Only()},
+			Object{"b1": b1Only()},
+		},
+		"a2": Object{
+			"b2": Object{
+				"c2": Object{"d2": "hahaha"},
+				"c3": Object{"d3": "hohohoh"},
+			},
+		},
+		"a3": Array{
+			Array{"b4", "b5", "b6", Object{"c4": Array{"d1", "d3"}}},
+		},
+	}
+	got := SerializeWithOptions(value, SerializeOptions{SortKeys: true, Indent: "\t", MaxInlineWidth: 44})
+	want := "a1 = [\n" +
+		"\t{ b1 = [ \"c1\" ] }\n" +
+		"\t{ b1 = [ \"c1\", { d1 = 4 } ] }\n" +
+		"\t{ b1 = [ \"c1\" ] }\n" +
+		"\t{ b1 = [ \"c1\" ] }\n" +
+		"\t{ b1 = [ \"c1\" ] }\n" +
+		"\t{ b1 = [ \"c1\" ] }\n" +
+		"]\n" +
+		"a2 = {\n" +
+		"\tb2 = {\n" +
+		"\t\tc2 = { d2 = \"hahaha\" }\n" +
+		"\t\tc3 = { d3 = \"hohohoh\" }\n" +
+		"\t}\n" +
+		"}\n" +
+		"a3 = [\n" +
+		"\t[\n" +
+		"\t\t\"b4\", \"b5\", \"b6\", { c4 = [ \"d1\", \"d3\" ] }\n" +
+		"\t]\n" +
+		"]"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestPrettySerializeArrayNoTrailingCommas(t *testing.T) {
 	// Top-level arrays serialize bare: one element per line, no [].
 	got := SerializePretty(Array{int64(1), int64(2), int64(3)}, "  ")

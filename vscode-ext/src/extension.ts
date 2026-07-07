@@ -163,9 +163,11 @@ function readPrettyOptions(): SerializePrettyOptions {
   const cfg = vscode.workspace.getConfiguration('jhon.format');
   const insertSpaces = cfg.get<boolean>('insertSpaces', false);
   const tabSize = cfg.get<number>('tabSize', 2);
+  const maxInlineWidth = cfg.get<number>('maxInlineWidth', 0);
   return {
     indent: insertSpaces ? ' '.repeat(tabSize) : '\t',
     sortKeys: cfg.get<boolean>('sortKeys', false),
+    maxInlineWidth,
   };
 }
 

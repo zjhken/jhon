@@ -474,6 +474,54 @@ def test_pretty_serialize_nested_object():
     )
 
 
+def test_pretty_serialize_deeply_nested():
+    # Mixed nesting stress: arrays of objects containing arrays (some with
+    # nested objects), deep object chains, arrays of arrays with objects.
+    # Pinned cross-impl in rust/src/lib.rs pretty_serialize_deeply_nested.
+    # Uses the new inline-short mode (max_inline_width=44, tab indent).
+    value = {
+        "a1": [
+            {"b1": ["c1"]},
+            {"b1": ["c1", {"d1": 4}]},
+            {"b1": ["c1"]},
+            {"b1": ["c1"]},
+            {"b1": ["c1"]},
+            {"b1": ["c1"]},
+        ],
+        "a2": {
+            "b2": {
+                "c2": {"d2": "hahaha"},
+                "c3": {"d3": "hohohoh"},
+            }
+        },
+        "a3": [
+            ["b4", "b5", "b6", {"c4": ["d1", "d3"]}],
+        ],
+    }
+    expected = (
+        'a1 = [\n'
+        '\t{ b1 = [ "c1" ] }\n'
+        '\t{ b1 = [ "c1", { d1 = 4 } ] }\n'
+        '\t{ b1 = [ "c1" ] }\n'
+        '\t{ b1 = [ "c1" ] }\n'
+        '\t{ b1 = [ "c1" ] }\n'
+        '\t{ b1 = [ "c1" ] }\n'
+        ']\n'
+        'a2 = {\n'
+        '\tb2 = {\n'
+        '\t\tc2 = { d2 = "hahaha" }\n'
+        '\t\tc3 = { d3 = "hohohoh" }\n'
+        '\t}\n'
+        '}\n'
+        'a3 = [\n'
+        '\t[\n'
+        '\t\t"b4", "b5", "b6", { c4 = [ "d1", "d3" ] }\n'
+        '\t]\n'
+        ']'
+    )
+    assert serialize_pretty(value, "\t", max_inline_width=44) == expected
+
+
 def test_pretty_serialize_array_no_trailing_commas():
     # Top-level arrays serialize bare: one element per line, no [].
     assert serialize_pretty([1, 2, 3]) == "1\n2\n3"

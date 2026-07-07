@@ -70,6 +70,13 @@ type SerializeOptions struct {
 	// Indent is the indent string used per depth level in pretty mode.
 	// Defaults to "  " (two spaces) when empty.
 	Indent string
+	// MaxInlineWidth controls short-container inlining in pretty mode.
+	// 0 (default): every non-empty container renders multi-line.
+	// >0: a container whose single-line form fits within this many characters
+	// is emitted inline as `{ k = v, ... }` / `[ a, b, ... ]`. Containers
+	// whose joined children fit but the whole doesn't use a 3-line wrapper.
+	// Otherwise expands multi-line with one child per line.
+	MaxInlineWidth int
 }
 
 // ============================================================================
@@ -885,10 +892,16 @@ func Serialize(v Value) string {
 // SerializeWithOptions produces compact or pretty JHON output.
 // When opts.Indent is non-empty, the output is pretty-printed (multi-line
 // with spaces around =, no trailing commas, no commas between properties).
+// When opts.MaxInlineWidth > 0 (and opts.Indent is non-empty), short
+// containers are inlined as `{ k = v, ... }` / `[ a, b, ... ]`.
 func SerializeWithOptions(v Value, opts SerializeOptions) string {
 	var sb strings.Builder
 	if opts.Indent != "" {
-		serializeTopPretty(v, opts, &sb)
+		if opts.MaxInlineWidth > 0 {
+			serializeTopPrettyInline(v, opts, &sb)
+		} else {
+			serializeTopPretty(v, opts, &sb)
+		}
 	} else {
 		serializeTopCompact(v, opts, &sb)
 	}
@@ -1193,6 +1206,246 @@ func serializeArrayPretty(arr Array, opts SerializeOptions, depth int, sb *strin
 		sb.WriteString(indent)
 	}
 	sb.WriteByte(']')
+}
+
+// ============================================================================
+// Inline-aware pretty printer (`MaxInlineWidth > 0` mode).
+//
+// Short containers render as `{ k = v, ... }` / `[ a, b, ... ]` on a single
+// line; medium containers use a 3-line wrapper with joined children on one
+// line; long containers expand one child per line. Separate from the legacy
+// `serializePretty` path, which is unchanged.
+// ============================================================================
+
+func serializeTopPrettyInline(v Value, opts SerializeOptions, sb *strings.Builder) {
+	switch val := v.(type) {
+	case Object:
+		if len(val) == 0 {
+			return
+		}
+		// Top-level object: keys at column 0, no surrounding braces.
+		keys := objectKeys(val, opts.SortKeys)
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteByte('\n')
+			}
+			serializeKey(k, sb)
+			sb.WriteString(" = ")
+			renderPrettyInline(val[k], opts, 0, sb)
+		}
+	case Array:
+		if len(val) == 0 {
+			return
+		}
+		// Top-level bare array: each element at column 0.
+		for i, el := range val {
+			if i > 0 {
+				sb.WriteByte('\n')
+			}
+			renderPrettyInline(el, opts, 0, sb)
+		}
+	case nil:
+		// Top-level null → emit nothing.
+	default:
+		renderPrettyInline(v, opts, 0, sb)
+	}
+}
+
+func renderPrettyInline(v Value, opts SerializeOptions, depth int, sb *strings.Builder) {
+	switch val := v.(type) {
+	case string:
+		serializeString(val, sb)
+		return
+	case int64:
+		sb.WriteString(strconv.FormatInt(val, 10))
+		return
+	case uint64:
+		sb.WriteString(strconv.FormatUint(val, 10))
+		return
+	case int:
+		sb.WriteString(strconv.Itoa(val))
+		return
+	case float64:
+		serializeFloat(val, sb)
+		return
+	case bool:
+		if val {
+			sb.WriteString("true")
+		} else {
+			sb.WriteString("false")
+		}
+		return
+	case nil:
+		sb.WriteString("null")
+		return
+	}
+
+	indent := opts.Indent
+	if indent == "" {
+		indent = "  "
+	}
+
+	if obj, isObj := v.(Object); isObj {
+		if len(obj) == 0 {
+			sb.WriteString("{}")
+			return
+		}
+		inline := inlineValue(v, opts)
+		if len(inline) <= opts.MaxInlineWidth {
+			sb.WriteString(inline)
+			return
+		}
+		joined := joinedObjectChildren(obj, opts)
+		if len(joined) > 0 && len(joined) <= opts.MaxInlineWidth {
+			sb.WriteByte('{')
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth+1)
+			sb.WriteString(joined)
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth)
+			sb.WriteByte('}')
+			return
+		}
+		// wrapper_multi
+		sb.WriteByte('{')
+		keys := objectKeys(obj, opts.SortKeys)
+		for _, k := range keys {
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth+1)
+			serializeKey(k, sb)
+			sb.WriteString(" = ")
+			renderPrettyInline(obj[k], opts, depth+1, sb)
+		}
+		sb.WriteByte('\n')
+		writeIndent(sb, indent, depth)
+		sb.WriteByte('}')
+		return
+	}
+
+	if arr, isArr := v.(Array); isArr {
+		if len(arr) == 0 {
+			sb.WriteString("[]")
+			return
+		}
+		inline := inlineValue(v, opts)
+		if len(inline) <= opts.MaxInlineWidth {
+			sb.WriteString(inline)
+			return
+		}
+		joined := joinedArrayChildren(arr, opts)
+		if len(joined) > 0 && len(joined) <= opts.MaxInlineWidth {
+			sb.WriteByte('[')
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth+1)
+			sb.WriteString(joined)
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth)
+			sb.WriteByte(']')
+			return
+		}
+		// wrapper_multi
+		sb.WriteByte('[')
+		for _, el := range arr {
+			sb.WriteByte('\n')
+			writeIndent(sb, indent, depth+1)
+			renderPrettyInline(el, opts, depth+1, sb)
+		}
+		sb.WriteByte('\n')
+		writeIndent(sb, indent, depth)
+		sb.WriteByte(']')
+		return
+	}
+}
+
+func writeIndent(sb *strings.Builder, indent string, n int) {
+	for i := 0; i < n; i++ {
+		sb.WriteString(indent)
+	}
+}
+
+// inlineValue renders a value as a single-line string with outer brackets
+// for containers and `{ k = v, ... }` / `[ a, b, ... ]` spacing.
+func inlineValue(v Value, opts SerializeOptions) string {
+	switch val := v.(type) {
+	case Object:
+		if len(val) == 0 {
+			return "{}"
+		}
+		var sb strings.Builder
+		sb.WriteString("{ ")
+		keys := objectKeys(val, opts.SortKeys)
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			serializeKey(k, &sb)
+			sb.WriteString(" = ")
+			sb.WriteString(inlineValue(val[k], opts))
+		}
+		sb.WriteString(" }")
+		return sb.String()
+	case Array:
+		if len(val) == 0 {
+			return "[]"
+		}
+		var sb strings.Builder
+		sb.WriteString("[ ")
+		for i, el := range val {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(inlineValue(el, opts))
+		}
+		sb.WriteString(" ]")
+		return sb.String()
+	case string:
+		var sb strings.Builder
+		serializeString(val, &sb)
+		return sb.String()
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		var sb strings.Builder
+		serializeFloat(val, &sb)
+		return sb.String()
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case nil:
+		return "null"
+	}
+	return ""
+}
+
+func joinedObjectChildren(obj Object, opts SerializeOptions) string {
+	var sb strings.Builder
+	keys := objectKeys(obj, opts.SortKeys)
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		serializeKey(k, &sb)
+		sb.WriteString(" = ")
+		sb.WriteString(inlineValue(obj[k], opts))
+	}
+	return sb.String()
+}
+
+func joinedArrayChildren(arr Array, opts SerializeOptions) string {
+	var sb strings.Builder
+	for i, el := range arr {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(inlineValue(el, opts))
+	}
+	return sb.String()
 }
 
 func objectKeys(obj Object, sortKeys bool) []string {

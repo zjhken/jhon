@@ -507,6 +507,70 @@ class JhonTest {
     }
 
     @Test
+    @DisplayName("pretty serialize deeply nested mixed structure")
+    void prettySerializeDeeplyNested() {
+        // Mixed nesting stress: arrays of objects containing arrays (some
+        // with nested objects), deep object chains, arrays of arrays with
+        // objects. Pinned cross-impl in rust/src/lib.rs pretty_serialize_deeply_nested.
+        // Uses the new inline-short mode (maxInlineWidth=44, tab indent).
+        java.util.ArrayList<Object> b1Only = new java.util.ArrayList<>();
+        b1Only.add("c1");
+        java.util.ArrayList<Object> b1WithObj = new java.util.ArrayList<>();
+        b1WithObj.add("c1");
+        b1WithObj.add(obj("d1", 4L));
+
+        java.util.ArrayList<Object> a1 = new java.util.ArrayList<>();
+        a1.add(obj("b1", b1Only));
+        a1.add(obj("b1", new java.util.ArrayList<>(b1WithObj)));
+        a1.add(obj("b1", new java.util.ArrayList<>(b1Only)));
+        a1.add(obj("b1", new java.util.ArrayList<>(b1Only)));
+        a1.add(obj("b1", new java.util.ArrayList<>(b1Only)));
+        a1.add(obj("b1", new java.util.ArrayList<>(b1Only)));
+
+        java.util.ArrayList<Object> c4arr = new java.util.ArrayList<>();
+        c4arr.add("d1");
+        c4arr.add("d3");
+        java.util.ArrayList<Object> a3inner = new java.util.ArrayList<>();
+        a3inner.add("b4");
+        a3inner.add("b5");
+        a3inner.add("b6");
+        a3inner.add(obj("c4", c4arr));
+        java.util.ArrayList<Object> a3 = new java.util.ArrayList<>();
+        a3.add(a3inner);
+
+        Object value = obj(
+            "a1", a1,
+            "a2", obj("b2", obj(
+                "c2", obj("d2", "hahaha"),
+                "c3", obj("d3", "hohohoh")
+            )),
+            "a3", a3
+        );
+        assertEquals(
+            "a1 = [\n" +
+            "\t{ b1 = [ \"c1\" ] }\n" +
+            "\t{ b1 = [ \"c1\", { d1 = 4 } ] }\n" +
+            "\t{ b1 = [ \"c1\" ] }\n" +
+            "\t{ b1 = [ \"c1\" ] }\n" +
+            "\t{ b1 = [ \"c1\" ] }\n" +
+            "\t{ b1 = [ \"c1\" ] }\n" +
+            "]\n" +
+            "a2 = {\n" +
+            "\tb2 = {\n" +
+            "\t\tc2 = { d2 = \"hahaha\" }\n" +
+            "\t\tc3 = { d3 = \"hohohoh\" }\n" +
+            "\t}\n" +
+            "}\n" +
+            "a3 = [\n" +
+            "\t[\n" +
+            "\t\t\"b4\", \"b5\", \"b6\", { c4 = [ \"d1\", \"d3\" ] }\n" +
+            "\t]\n" +
+            "]",
+            Jhon.serializePretty(value, "\t", 44)
+        );
+    }
+
+    @Test
     @DisplayName("pretty serialize top-level array (bare, one per line)")
     void prettySerializeArray() {
         java.util.ArrayList<Object> arr = new java.util.ArrayList<>();

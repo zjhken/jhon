@@ -14,11 +14,23 @@ use std::fmt::Write as _;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JhonError {
     /// A syntax error at a specific source position (1-based line, 1-based column).
-    Syntax { line: usize, col: usize, msg: String },
+    Syntax {
+        line: usize,
+        col: usize,
+        msg: String,
+    },
     /// The input ended unexpectedly.
-    Eof { line: usize, col: usize, msg: String },
+    Eof {
+        line: usize,
+        col: usize,
+        msg: String,
+    },
     /// An object declared the same key more than once.
-    DuplicateKey { line: usize, col: usize, key: String },
+    DuplicateKey {
+        line: usize,
+        col: usize,
+        key: String,
+    },
     /// A serde (de)serialization error wrapping the underlying message.
     Serde(String),
 }
@@ -159,8 +171,48 @@ fn serialize_top_compact(value: &Value, result: &mut String) {
 /// assert_eq!(jhon_string, "name = \"John\"\nage = 30");
 /// ```
 pub fn serialize_pretty(value: &Value, indent: &str) -> String {
+    serialize_pretty_with_options(
+        value,
+        &PrettyOptions {
+            indent: indent.to_string(),
+            max_inline_width: 0,
+        },
+    )
+}
+
+/// Options for [``serialize_pretty_with_options``].
+///
+/// `max_inline_width` controls short-container inlining:
+/// - `0` (default): every non-empty container renders multi-line (legacy behavior).
+/// - `>0`: a container whose single-line form fits within this many characters
+///   is emitted inline as `{ k = v, ... }` / `[ a, b, ... ]`. Containers that
+///   don't fit as a whole but whose joined children do fit use a 3-line
+///   wrapper (`[` / `    a, b, c` / `]`). Otherwise the container expands
+///   multi-line with one child per line.
+#[derive(Debug, Clone)]
+pub struct PrettyOptions {
+    pub indent: String,
+    pub max_inline_width: usize,
+}
+
+impl Default for PrettyOptions {
+    fn default() -> Self {
+        Self {
+            indent: "  ".to_string(),
+            max_inline_width: 0,
+        }
+    }
+}
+
+/// Pretty-print with the full [``PrettyOptions``]. See its docs for the
+/// `max_inline_width` mode.
+pub fn serialize_pretty_with_options(value: &Value, opts: &PrettyOptions) -> String {
     let mut result = String::new();
-    serialize_top_pretty(value, indent, &mut result);
+    if opts.max_inline_width > 0 {
+        serialize_pretty_inline_top(value, &opts.indent, opts.max_inline_width, &mut result);
+    } else {
+        serialize_top_pretty(value, &opts.indent, &mut result);
+    }
     result
 }
 
@@ -390,15 +442,15 @@ pub fn to_string_pretty<T: Serialize>(value: &T, indent: &str) -> Result<String>
 // Static Tables (from serde_json)
 // =============================================================================
 
-const BB: u8 = b'b';   // \\x08
-const TT: u8 = b't';   // \\x09
-const NN: u8 = b'n';   // \\x0A
-const FF: u8 = b'f';   // \\x0C
-const RR: u8 = b'r';   // \\x0D
-const QU: u8 = b'"';   // \\x22
-const BS: u8 = b'\\';  // \\x5C
-const UU: u8 = b'u';   // \\x00...\\x1F except the ones above
-const __: u8 = 0;      // No escape needed
+const BB: u8 = b'b'; // \\x08
+const TT: u8 = b't'; // \\x09
+const NN: u8 = b'n'; // \\x0A
+const FF: u8 = b'f'; // \\x0C
+const RR: u8 = b'r'; // \\x0D
+const QU: u8 = b'"'; // \\x22
+const BS: u8 = b'\\'; // \\x5C
+const UU: u8 = b'u'; // \\x00...\\x1F except the ones above
+const __: u8 = 0; // No escape needed
 
 // Lookup table of escape sequences. A value of b'x' at index i means that byte
 // i is escaped as "\x" in JSON. A value of 0 means that byte i is not escaped.
@@ -607,8 +659,9 @@ impl<'a> Parser<'a> {
                                 code
                             ));
                         }
-                        let c = char::from_u32(code)
-                            .ok_or_else(|| syntax_err!("Invalid Unicode code point U+{:04X}", code))?;
+                        let c = char::from_u32(code).ok_or_else(|| {
+                            syntax_err!("Invalid Unicode code point U+{:04X}", code)
+                        })?;
                         let mut buf = [0u8; 4];
                         bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
                     }
@@ -648,27 +701,27 @@ impl<'a> Parser<'a> {
         }
 
         if self.current() != Some(b'"') {
-            return Err(syntax_err!("Expected opening quote after r and # symbols in raw string"));
+            return Err(syntax_err!(
+                "Expected opening quote after r and # symbols in raw string"
+            ));
         }
         self.advance(); // skip opening quote
 
         let start = self.pos;
 
         while self.pos < self.input.len() {
-            if self.input[self.pos] == b'"'
-                && self.pos + hash_count < self.input.len() {
-                    let is_closing = (1..=hash_count).all(|j| {
-                        self.input.get(self.pos + j) == Some(&b'#')
-                    });
+            if self.input[self.pos] == b'"' && self.pos + hash_count < self.input.len() {
+                let is_closing =
+                    (1..=hash_count).all(|j| self.input.get(self.pos + j) == Some(&b'#'));
 
-                    if is_closing {
-                        let s = std::str::from_utf8(&self.input[start..self.pos])
-                            .map_err(|_| syntax_err!("Invalid UTF-8 in raw string"))?
-                            .to_string();
-                        self.pos += hash_count + 1;
-                        return Ok(s);
-                    }
+                if is_closing {
+                    let s = std::str::from_utf8(&self.input[start..self.pos])
+                        .map_err(|_| syntax_err!("Invalid UTF-8 in raw string"))?
+                        .to_string();
+                    self.pos += hash_count + 1;
+                    return Ok(s);
                 }
+            }
             self.pos += 1;
         }
 
@@ -735,13 +788,19 @@ impl<'a> Parser<'a> {
         // followed by alphanumeric.
         if let Some(b) = self.current()
             && matches!(b, b'u' | b'i' | b'f')
-                && self.input.get(self.pos + 1).copied().filter(|c| c.is_ascii_alphanumeric()).is_some() {
-                    return Err(syntax_err!(
-                        "number type suffix not allowed (saw '{}{}')",
-                        b as char,
-                        self.input[self.pos + 1] as char
-                    ));
-                }
+            && self
+                .input
+                .get(self.pos + 1)
+                .copied()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .is_some()
+        {
+            return Err(syntax_err!(
+                "number type suffix not allowed (saw '{}{}')",
+                b as char,
+                self.input[self.pos + 1] as char
+            ));
+        }
 
         // Assemble signed form for parsing.
         let signed = if negative {
@@ -762,13 +821,15 @@ impl<'a> Parser<'a> {
                 return Ok(Value::Number(Number::from(u)));
             }
             if let Ok(i) = signed.parse::<i128>()
-                && let Some(n) = Number::from_f64(i as f64) {
-                    return Ok(Value::Number(n));
-                }
+                && let Some(n) = Number::from_f64(i as f64)
+            {
+                return Ok(Value::Number(n));
+            }
             if let Ok(u) = signed.parse::<u128>()
-                && let Some(n) = Number::from_f64(u as f64) {
-                    return Ok(Value::Number(n));
-                }
+                && let Some(n) = Number::from_f64(u as f64)
+            {
+                return Ok(Value::Number(n));
+            }
         }
 
         let f = signed
@@ -834,7 +895,9 @@ impl<'a> Parser<'a> {
             }
         }
         if !has_digit {
-            return Err(syntax_err!("number requires at least one digit after radix prefix"));
+            return Err(syntax_err!(
+                "number requires at least one digit after radix prefix"
+            ));
         }
         if last_was_under {
             return Err(syntax_err!("number cannot end with underscore"));
@@ -971,7 +1034,9 @@ impl<'a> Parser<'a> {
     fn parse_value(&mut self) -> Result<Option<Value>> {
         self.skip_ws_and_comments();
 
-        let c = self.current().ok_or_else(|| syntax_err!("Expected value"))?;
+        let c = self
+            .current()
+            .ok_or_else(|| syntax_err!("Expected value"))?;
 
         let result = match c {
             b'"' | b'\'' => Some(Value::String(self.parse_string(c)?)),
@@ -988,12 +1053,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_boolean(&mut self) -> Result<Value> {
-        if self.input.len() >= self.pos + 4
-            && &self.input[self.pos..self.pos + 4] == b"true" {
+        if self.input.len() >= self.pos + 4 && &self.input[self.pos..self.pos + 4] == b"true" {
             self.pos += 4;
             return Ok(Value::Bool(true));
         } else if self.input.len() >= self.pos + 5
-            && &self.input[self.pos..self.pos + 5] == b"false" {
+            && &self.input[self.pos..self.pos + 5] == b"false"
+        {
             self.pos += 5;
             return Ok(Value::Bool(false));
         }
@@ -1001,15 +1066,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_null(&mut self) -> Result<Value> {
-        if self.input.len() >= self.pos + 4
-            && &self.input[self.pos..self.pos + 4] == b"null" {
+        if self.input.len() >= self.pos + 4 && &self.input[self.pos..self.pos + 4] == b"null" {
             self.pos += 4;
             return Ok(Value::Null);
         }
         Err(syntax_err!("Invalid null value"))
     }
 }
-
 
 #[inline]
 /// Parse a signed radix literal into a JSON number. Tries i64 → u64 → i128 →
@@ -1023,13 +1086,15 @@ fn parse_radix_literal(signed: &str, radix: u32) -> Result<Value> {
         return Ok(Value::Number(Number::from(u)));
     }
     if let Ok(i) = i128::from_str_radix(signed, radix)
-        && let Some(n) = Number::from_f64(i as f64) {
-            return Ok(Value::Number(n));
-        }
+        && let Some(n) = Number::from_f64(i as f64)
+    {
+        return Ok(Value::Number(n));
+    }
     if let Ok(u) = u128::from_str_radix(signed, radix)
-        && let Some(n) = Number::from_f64(u as f64) {
-            return Ok(Value::Number(n));
-        }
+        && let Some(n) = Number::from_f64(u as f64)
+    {
+        return Ok(Value::Number(n));
+    }
     Err(syntax_err!("could not parse number: {}", signed))
 }
 
@@ -1083,7 +1148,6 @@ fn parse_jhon_object(input: &str) -> Result<Value> {
     Ok(Value::Object(map))
 }
 
-
 fn parse_jhon_array(input: &str) -> Result<Value> {
     let mut parser = Parser::new(input.as_bytes());
     let mut elements = Vec::new();
@@ -1122,7 +1186,6 @@ fn parse_jhon_array(input: &str) -> Result<Value> {
 
     Ok(Value::Array(elements))
 }
-
 
 // =============================================================================
 // Optimized Serializer
@@ -1390,12 +1453,7 @@ fn serialize_array_pretty(arr: &[Value], indent: &str, depth: usize, result: &mu
 
 /// Emit the contents of an array without the surrounding `[]`. Used for
 /// top-level implicit arrays per SPEC.md §2 (array mode).
-fn serialize_array_contents_pretty(
-    arr: &[Value],
-    indent: &str,
-    depth: usize,
-    result: &mut String,
-) {
+fn serialize_array_contents_pretty(arr: &[Value], indent: &str, depth: usize, result: &mut String) {
     let mut first = true;
     for value in arr {
         if !first {
@@ -1414,6 +1472,189 @@ fn serialize_array_contents_pretty(
     }
 }
 
+// =============================================================================
+// Inline-aware pretty printer (`max_inline_width > 0` mode).
+//
+// Older `serialize_pretty_with_depth` always multi-lines non-empty containers.
+// This separate path short-circuits to a single-line `{ k = v, ... }` /
+// `[ a, b, ... ]` form when the result fits within `max_inline_width` chars,
+// and falls back to a 3-line "wrapper_compact" form when only the joined
+// children fit, and finally to one-child-per-line otherwise. Existing
+// `serialize_pretty` is unchanged because it routes through the legacy path
+// (`max_inline_width == 0`).
+// =============================================================================
+
+/// Top-level dispatch for inline-aware mode. Mirrors `serialize_top_pretty`:
+/// empty containers and `null` collapse to empty string (SPEC §2); top-level
+/// arrays emit bare (no surrounding `[]`).
+fn serialize_pretty_inline_top(value: &Value, indent: &str, max_inline_width: usize, result: &mut String) {
+    match value {
+        Value::Array(arr) if arr.is_empty() => {}
+        Value::Array(arr) => {
+            let mut first = true;
+            for v in arr {
+                if !first {
+                    result.push('\n');
+                }
+                first = false;
+                render_pretty_inline(v, indent, 0, max_inline_width, result);
+            }
+        }
+        Value::Object(map) if map.is_empty() => {}
+        Value::Object(map) => {
+            // Top-level object: keys at column 0, no surrounding braces
+            // (mirrors `serialize_object_pretty` at depth=0, in_array=false).
+            let mut first = true;
+            for (k, v) in map.iter() {
+                if !first {
+                    result.push('\n');
+                }
+                first = false;
+                serialize_key(k, result);
+                result.push_str(" = ");
+                render_pretty_inline(v, indent, 0, max_inline_width, result);
+            }
+        }
+        Value::Null => {}
+        _ => render_pretty_inline(value, indent, 0, max_inline_width, result),
+    }
+}
+
+/// Render a single value at `depth`. Caller is responsible for any leading
+/// indent (e.g. after `key = ` or inside an array's child loop).
+fn render_pretty_inline(value: &Value, indent: &str, depth: usize, max_inline_width: usize, result: &mut String) {
+    match value {
+        Value::String(s) => { serialize_string(s, result); return; }
+        Value::Number(n) => { serialize_number(n, result); return; }
+        Value::Bool(b) => { result.push_str(if *b { "true" } else { "false" }); return; }
+        Value::Null => { result.push_str("null"); return; }
+        Value::Object(map) if map.is_empty() => { result.push_str("{}"); return; }
+        Value::Array(arr) if arr.is_empty() => { result.push_str("[]"); return; }
+        _ => {}
+    }
+
+    // Try fully-inline form first.
+    let mut inline_buf = String::new();
+    push_inline(value, &mut inline_buf);
+    if inline_buf.len() <= max_inline_width {
+        result.push_str(&inline_buf);
+        return;
+    }
+
+    // Try wrapper_compact: brackets on their own lines, joined children on one line.
+    let mut joined_buf = String::new();
+    push_joined_children(value, &mut joined_buf);
+    if !joined_buf.is_empty() && joined_buf.len() <= max_inline_width {
+        let (open, close) = if matches!(value, Value::Object(_)) { ('{', '}') } else { ('[', ']') };
+        result.push(open);
+        result.push('\n');
+        push_indent(result, indent, depth + 1);
+        result.push_str(&joined_buf);
+        result.push('\n');
+        push_indent(result, indent, depth);
+        result.push(close);
+        return;
+    }
+
+    // wrapper_multi: open bracket inline, one child per line, close at parent indent.
+    match value {
+        Value::Object(map) => {
+            result.push('{');
+            for (k, v) in map.iter() {
+                result.push('\n');
+                push_indent(result, indent, depth + 1);
+                serialize_key(k, result);
+                result.push_str(" = ");
+                render_pretty_inline(v, indent, depth + 1, max_inline_width, result);
+            }
+            result.push('\n');
+            push_indent(result, indent, depth);
+            result.push('}');
+        }
+        Value::Array(arr) => {
+            result.push('[');
+            for v in arr.iter() {
+                result.push('\n');
+                push_indent(result, indent, depth + 1);
+                render_pretty_inline(v, indent, depth + 1, max_inline_width, result);
+            }
+            result.push('\n');
+            push_indent(result, indent, depth);
+            result.push(']');
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Append `indent × n` to `result`.
+fn push_indent(result: &mut String, indent: &str, n: usize) {
+    for _ in 0..n {
+        result.push_str(indent);
+    }
+}
+
+/// Single-line rendering of a value with `{ k = v, ... }` / `[ a, b, ... ]`
+/// spacing — including outer brackets/braces. Used both for the inline-mode
+/// emission and for measuring length via the buffer's `len()`.
+fn push_inline(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) if map.is_empty() => out.push_str("{}"),
+        Value::Object(map) => {
+            out.push_str("{ ");
+            let mut first = true;
+            for (k, v) in map.iter() {
+                if !first { out.push_str(", "); }
+                first = false;
+                serialize_key(k, out);
+                out.push_str(" = ");
+                push_inline(v, out);
+            }
+            out.push_str(" }");
+        }
+        Value::Array(arr) if arr.is_empty() => out.push_str("[]"),
+        Value::Array(arr) => {
+            out.push_str("[ ");
+            let mut first = true;
+            for v in arr.iter() {
+                if !first { out.push_str(", "); }
+                first = false;
+                push_inline(v, out);
+            }
+            out.push_str(" ]");
+        }
+        Value::String(s) => serialize_string(s, out),
+        Value::Number(n) => serialize_number(n, out),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Null => out.push_str("null"),
+    }
+}
+
+/// Like [``push_inline``] but without the outer brackets/braces — just the
+/// joined children. Returns empty string for scalars and empty containers.
+fn push_joined_children(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut first = true;
+            for (k, v) in map.iter() {
+                if !first { out.push_str(", "); }
+                first = false;
+                serialize_key(k, out);
+                out.push_str(" = ");
+                push_inline(v, out);
+            }
+        }
+        Value::Array(arr) => {
+            let mut first = true;
+            for v in arr.iter() {
+                if !first { out.push_str(", "); }
+                first = false;
+                push_inline(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn needs_quoting(s: &str) -> bool {
     if s.is_empty() {
         return true;
@@ -1427,10 +1668,19 @@ fn needs_quoting(s: &str) -> bool {
 fn is_key_delimiter(b: u8) -> bool {
     matches!(
         b,
-        b' ' | b'\t' | b'\n' | b'\r' |
-        b'=' | b',' |
-        b'{' | b'}' | b'[' | b']' |
-        b'/' | b'"' | b'\'' | b'#'
+        b' ' | b'\t'
+            | b'\n'
+            | b'\r'
+            | b'='
+            | b','
+            | b'{'
+            | b'}'
+            | b'['
+            | b']'
+            | b'/'
+            | b'"'
+            | b'\''
+            | b'#'
     )
 }
 
@@ -1459,7 +1709,10 @@ mod tests {
 
     #[test]
     fn comments_only_input_parses_to_null() {
-        assert_eq!(parse("// just a comment\n/* block */").unwrap(), json!(null));
+        assert_eq!(
+            parse("// just a comment\n/* block */").unwrap(),
+            json!(null)
+        );
     }
 
     #[test]
@@ -1529,10 +1782,7 @@ mod tests {
 
     #[test]
     fn top_level_multiple_objects() {
-        assert_eq!(
-            parse("{a=1}\n{b=2}").unwrap(),
-            json!([{"a": 1}, {"b": 2}])
-        );
+        assert_eq!(parse("{a=1}\n{b=2}").unwrap(), json!([{"a": 1}, {"b": 2}]));
     }
 
     #[test]
@@ -1658,18 +1908,12 @@ mod tests {
 
     #[test]
     fn keyword_true_as_string_key() {
-        assert_eq!(
-            parse(r#"true="yes""#).unwrap(),
-            json!({"true": "yes"})
-        );
+        assert_eq!(parse(r#"true="yes""#).unwrap(), json!({"true": "yes"}));
     }
 
     #[test]
     fn keyword_false_as_string_key() {
-        assert_eq!(
-            parse(r#"false="no""#).unwrap(),
-            json!({"false": "no"})
-        );
+        assert_eq!(parse(r#"false="no""#).unwrap(), json!({"false": "no"}));
     }
 
     #[test]
@@ -1698,10 +1942,7 @@ mod tests {
 
     #[test]
     fn key_with_dot() {
-        assert_eq!(
-            parse("app.version=1").unwrap(),
-            json!({"app.version": 1})
-        );
+        assert_eq!(parse("app.version=1").unwrap(), json!({"app.version": 1}));
     }
 
     #[test]
@@ -1749,10 +1990,7 @@ mod tests {
 
     #[test]
     fn string_escape_unicode() {
-        assert_eq!(
-            parse(r#"key="é""#).unwrap(),
-            json!({"key": "é"})
-        );
+        assert_eq!(parse(r#"key="é""#).unwrap(), json!({"key": "é"}));
     }
 
     #[test]
@@ -2060,10 +2298,7 @@ mod tests {
 
     #[test]
     fn multiline_array_newline_separated() {
-        assert_eq!(
-            parse("k=[\n1\n2\n3\n]").unwrap()["k"],
-            json!([1, 2, 3])
-        );
+        assert_eq!(parse("k=[\n1\n2\n3\n]").unwrap()["k"], json!([1, 2, 3]));
     }
 
     #[test]
@@ -2104,10 +2339,7 @@ mod tests {
     #[test]
     fn pretty_serialize_spaces_around_equals_no_trailing_commas() {
         let value = json!({"name": "John", "age": 30});
-        assert_eq!(
-            serialize_pretty(&value, "  "),
-            "name = \"John\"\nage = 30"
-        );
+        assert_eq!(serialize_pretty(&value, "  "), "name = \"John\"\nage = 30");
     }
 
     #[test]
@@ -2120,13 +2352,65 @@ mod tests {
     }
 
     #[test]
+    fn pretty_serialize_deeply_nested() {
+        // Mixed nesting stress test: arrays of objects containing arrays,
+        // some with nested objects; deep object chains; arrays of arrays
+        // containing objects. Verifies byte-level output across impls.
+        let value = json!({
+            "a1": [
+                {"b1": ["c1"]},
+                {"b1": ["c1", {"d1": 4}]},
+                {"b1": ["c1"]},
+                {"b1": ["c1"]},
+                {"b1": ["c1"]},
+                {"b1": ["c1"]}
+            ],
+            "a2": {
+                "b2": {
+                    "c2": {"d2": "hahaha"},
+                    "c3": {"d3": "hohohoh"}
+                }
+            },
+            "a3": [
+                ["b4", "b5", "b6", {"c4": ["d1", "d3"]}]
+            ]
+        });
+        let expected = r#"a1 = [
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1", { d1 = 4 } ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+]
+a2 = {
+	b2 = {
+		c2 = { d2 = "hahaha" }
+		c3 = { d3 = "hohohoh" }
+	}
+}
+a3 = [
+	[
+		"b4", "b5", "b6", { c4 = [ "d1", "d3" ] }
+	]
+]"#;
+        assert_eq!(
+            serialize_pretty_with_options(
+                &value,
+                &PrettyOptions {
+                    indent: "\t".to_string(),
+                    max_inline_width: 44,
+                }
+            ),
+            expected
+        );
+    }
+
+    #[test]
     fn pretty_serialize_array_no_trailing_commas() {
         // Top-level arrays serialize bare: one element per line, no [].
         let value = json!([1, 2, 3, "hello"]);
-        assert_eq!(
-            serialize_pretty(&value, "  "),
-            "1\n2\n3\n\"hello\""
-        );
+        assert_eq!(serialize_pretty(&value, "  "), "1\n2\n3\n\"hello\"");
     }
 
     #[test]

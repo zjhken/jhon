@@ -683,9 +683,14 @@ class Serializer:
 
     # ---- pretty ----
 
-    def serialize_pretty(self, value: Any, indent: str = "  ") -> str:
+    def serialize_pretty(
+        self, value: Any, indent: str = "  ", *, max_inline_width: int = 0
+    ) -> str:
         out: List[str] = []
-        self._serialize_top_pretty(value, indent, out)
+        if max_inline_width > 0:
+            self._serialize_top_pretty_inline(value, indent, max_inline_width, out)
+        else:
+            self._serialize_top_pretty(value, indent, out)
         return "".join(out)
 
     def _serialize_top_pretty(self, v: Any, indent: str, out: List[str]) -> None:
@@ -862,6 +867,149 @@ class Serializer:
         else:
             out.append(repr(f))
 
+    # ========================================================================
+    # Inline-aware pretty printer (`max_inline_width > 0` mode).
+    # ========================================================================
+
+    def _serialize_top_pretty_inline(
+        self, v: Any, indent: str, max_inline_width: int, out: List[str]
+    ) -> None:
+        if v is None:
+            return
+        if isinstance(v, list):
+            if len(v) == 0:
+                return
+            for i, el in enumerate(v):
+                if i > 0:
+                    out.append("\n")
+                self._render_pretty_inline(el, indent, 0, max_inline_width, out)
+            return
+        if isinstance(v, dict):
+            if len(v) == 0:
+                return
+            keys = self._keys(v)
+            for i, k in enumerate(keys):
+                if i > 0:
+                    out.append("\n")
+                self._serialize_key(k, out)
+                out.append(" = ")
+                self._render_pretty_inline(v[k], indent, 0, max_inline_width, out)
+            return
+        self._render_pretty_inline(v, indent, 0, max_inline_width, out)
+
+    def _render_pretty_inline(
+        self, v: Any, indent: str, depth: int, max_inline_width: int, out: List[str]
+    ) -> None:
+        # Scalars
+        if isinstance(v, str):
+            self._serialize_string(v, out)
+            return
+        if isinstance(v, bool):
+            out.append("true" if v else "false")
+            return
+        if v is None:
+            out.append("null")
+            return
+        if isinstance(v, int):
+            out.append(str(v))
+            return
+        if isinstance(v, float):
+            self._serialize_float(v, out)
+            return
+
+        if isinstance(v, dict):
+            if len(v) == 0:
+                out.append("{}")
+                return
+            inline = self._inline_value(v)
+            if len(inline) <= max_inline_width:
+                out.append(inline)
+                return
+            joined = self._joined_object_children(v)
+            if joined and len(joined) <= max_inline_width:
+                out.append("{")
+                out.append("\n" + indent * (depth + 1))
+                out.append(joined)
+                out.append("\n" + indent * depth)
+                out.append("}")
+                return
+            # wrapper_multi
+            out.append("{")
+            keys = self._keys(v)
+            for k in keys:
+                out.append("\n" + indent * (depth + 1))
+                self._serialize_key(k, out)
+                out.append(" = ")
+                self._render_pretty_inline(v[k], indent, depth + 1, max_inline_width, out)
+            out.append("\n" + indent * depth)
+            out.append("}")
+            return
+
+        if isinstance(v, list):
+            if len(v) == 0:
+                out.append("[]")
+                return
+            inline = self._inline_value(v)
+            if len(inline) <= max_inline_width:
+                out.append(inline)
+                return
+            joined = self._joined_array_children(v)
+            if joined and len(joined) <= max_inline_width:
+                out.append("[")
+                out.append("\n" + indent * (depth + 1))
+                out.append(joined)
+                out.append("\n" + indent * depth)
+                out.append("]")
+                return
+            # wrapper_multi
+            out.append("[")
+            for el in v:
+                out.append("\n" + indent * (depth + 1))
+                self._render_pretty_inline(el, indent, depth + 1, max_inline_width, out)
+            out.append("\n" + indent * depth)
+            out.append("]")
+
+    def _inline_value(self, v: Any) -> str:
+        if isinstance(v, str):
+            out: List[str] = []
+            self._serialize_string(v, out)
+            return "".join(out)
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if v is None:
+            return "null"
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            out = []
+            self._serialize_float(v, out)
+            return "".join(out)
+        if isinstance(v, dict):
+            if len(v) == 0:
+                return "{}"
+            parts = []
+            for k in self._keys(v):
+                inner: List[str] = []
+                self._serialize_key(k, inner)
+                parts.append("".join(inner) + " = " + self._inline_value(v[k]))
+            return "{ " + ", ".join(parts) + " }"
+        if isinstance(v, list):
+            if len(v) == 0:
+                return "[]"
+            return "[ " + ", ".join(self._inline_value(el) for el in v) + " ]"
+        return ""
+
+    def _joined_object_children(self, obj: Dict[str, Any]) -> str:
+        parts = []
+        for k in self._keys(obj):
+            inner: List[str] = []
+            self._serialize_key(k, inner)
+            parts.append("".join(inner) + " = " + self._inline_value(obj[k]))
+        return ", ".join(parts)
+
+    def _joined_array_children(self, arr: List[Any]) -> str:
+        return ", ".join(self._inline_value(el) for el in arr)
+
 
 def _needs_quoting(s: str) -> bool:
     if not s:
@@ -884,9 +1032,23 @@ def serialize(value: Any, *, sort_keys: bool = False) -> str:
     return Serializer(sort_keys=sort_keys).serialize(value)
 
 
-def serialize_pretty(value: Any, indent: str = "  ", *, sort_keys: bool = False) -> str:
-    """Serialize a value to pretty-printed JHON (multi-line, no commas)."""
-    return Serializer(sort_keys=sort_keys).serialize_pretty(value, indent=indent)
+def serialize_pretty(
+    value: Any,
+    indent: str = "  ",
+    *,
+    sort_keys: bool = False,
+    max_inline_width: int = 0,
+) -> str:
+    """Serialize a value to pretty-printed JHON.
+
+    When ``max_inline_width`` > 0, short containers are inlined as
+    ``{ k = v, ... }`` / ``[ a, b, ... ]`` provided they fit within that
+    many characters. Default 0 preserves the legacy "always multi-line"
+    behavior.
+    """
+    return Serializer(sort_keys=sort_keys).serialize_pretty(
+        value, indent=indent, max_inline_width=max_inline_width
+    )
 
 
 # Legacy alias kept for backward compatibility with v1.x callers. The new

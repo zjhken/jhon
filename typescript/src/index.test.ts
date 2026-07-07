@@ -423,6 +423,50 @@ describe('Rust parity: §7 serialization', () => {
     });
     expect(out).toBe(`server = {\n  host = "localhost"\n  port = 5432\n}`);
   });
+  test('pretty serialize deeply nested mixed structure', () => {
+    // Mixed nesting stress: arrays of objects containing arrays (some with
+    // nested objects), deep object chains, arrays of arrays with objects.
+    // Pinned cross-impl in rust/src/lib.rs pretty_serialize_deeply_nested.
+    // Uses the new inline-short mode (maxInlineWidth: 44, tab indent).
+    const value = {
+      a1: [
+        { b1: ['c1'] },
+        { b1: ['c1', { d1: 4 }] },
+        { b1: ['c1'] },
+        { b1: ['c1'] },
+        { b1: ['c1'] },
+        { b1: ['c1'] },
+      ],
+      a2: {
+        b2: {
+          c2: { d2: 'hahaha' },
+          c3: { d3: 'hohohoh' },
+        },
+      },
+      a3: [['b4', 'b5', 'b6', { c4: ['d1', 'd3'] }]],
+    };
+    const out = serializePretty(value, { indent: '\t', maxInlineWidth: 44 });
+    const expected = `a1 = [
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1", { d1 = 4 } ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+	{ b1 = [ "c1" ] }
+]
+a2 = {
+	b2 = {
+		c2 = { d2 = "hahaha" }
+		c3 = { d3 = "hohohoh" }
+	}
+}
+a3 = [
+	[
+		"b4", "b5", "b6", { c4 = [ "d1", "d3" ] }
+	]
+]`
+    expect(out).toBe(expected);
+  });
   test('pretty serialize top-level array (bare, one per line)', () => {
     const out = serializePretty([1, 2, 3]);
     expect(out).toBe(`1\n2\n3`);

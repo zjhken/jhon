@@ -47,6 +47,17 @@ export function serializeAstPretty(
   options?: SerializePrettyOptions
 ): string {
   const indent = options?.indent ?? '  ';
+  const maxInlineWidth = options?.maxInlineWidth ?? 0;
+  if (maxInlineWidth > 0) {
+    const ctx: InlineCtx = {
+      indent,
+      sortKeys: options?.sortKeys ?? false,
+      maxInlineWidth,
+      out: '',
+    };
+    emitPrettyDocumentInline(doc, ctx);
+    return ctx.out;
+  }
   const ctx: PrettyCtx = {
     indent,
     sortKeys: options?.sortKeys ?? false,
@@ -556,4 +567,203 @@ function prettyCommentLine(c: CommentToken): string {
     return '//' + c.text;
   }
   return '/*' + c.text + '*/';
+}
+
+// ============================================================================
+// Inline-aware pretty printer (`maxInlineWidth > 0` mode).
+//
+// Mirrors the Rust `render_pretty_inline` path: short containers render as
+// `{ k = v, ... }` / `[ a, b, ... ]` on a single line; medium containers use
+// a 3-line wrapper with joined children on one line; long containers expand
+// one child per line. Does not preserve comments — callers that need
+// comment preservation should leave `maxInlineWidth` unset.
+// ============================================================================
+
+interface InlineCtx {
+  indent: string;
+  sortKeys: boolean;
+  maxInlineWidth: number;
+  out: string;
+}
+
+function emitPrettyDocumentInline(doc: AstDocument, ctx: InlineCtx): void {
+  const body = doc.body;
+  switch (body.kind) {
+    case 'object':
+      emitInlineTopObject(body, ctx);
+      break;
+    case 'array':
+      if (body.elements.length === 0) {
+        // Empty top-level array → empty string (SPEC §2 "Empty" form).
+      } else {
+        emitInlineTopArray(body, ctx);
+      }
+      break;
+    case 'null':
+      // Top-level null → emit nothing.
+      break;
+    default:
+      renderInlineValue(body, ctx, 0);
+      break;
+  }
+}
+
+/** Top-level object: keys at column 0, no surrounding braces. */
+function emitInlineTopObject(obj: AstObject, ctx: InlineCtx): void {
+  const props = sortPropsIf(obj.properties, ctx.sortKeys);
+  let first = true;
+  for (const prop of props) {
+    if (!first) ctx.out += '\n';
+    first = false;
+    ctx.out += serializeKey(prop.key.value) + ' = ';
+    renderInlineValue(prop.value, ctx, 0);
+  }
+}
+
+/** Top-level bare array: each element at column 0, no surrounding `[]`. */
+function emitInlineTopArray(arr: AstArray, ctx: InlineCtx): void {
+  let first = true;
+  for (const el of arr.elements) {
+    if (!first) ctx.out += '\n';
+    first = false;
+    renderInlineValue(el, ctx, 0);
+  }
+}
+
+function renderInlineValue(node: AstValue, ctx: InlineCtx, depth: number): void {
+  switch (node.kind) {
+    case 'string':
+      ctx.out += prettyString(node);
+      return;
+    case 'number':
+      ctx.out += serializeNumber(node.value);
+      return;
+    case 'boolean':
+      ctx.out += node.value ? 'true' : 'false';
+      return;
+    case 'null':
+      ctx.out += 'null';
+      return;
+    case 'object': {
+      if (node.properties.length === 0) {
+        ctx.out += '{}';
+        return;
+      }
+      const inline = inlineObject(node, ctx);
+      if (inline.length <= ctx.maxInlineWidth) {
+        ctx.out += inline;
+        return;
+      }
+      const joined = joinedObjectChildren(node, ctx);
+      if (joined.length > 0 && joined.length <= ctx.maxInlineWidth) {
+        ctx.out += '{\n' + ctx.indent.repeat(depth + 1) + joined + '\n' + ctx.indent.repeat(depth) + '}';
+        return;
+      }
+      // wrapper_multi
+      ctx.out += '{';
+      const props = sortPropsIf(node.properties, ctx.sortKeys);
+      for (const prop of props) {
+        ctx.out += '\n' + ctx.indent.repeat(depth + 1) + serializeKey(prop.key.value) + ' = ';
+        renderInlineValue(prop.value, ctx, depth + 1);
+      }
+      ctx.out += '\n' + ctx.indent.repeat(depth) + '}';
+      return;
+    }
+    case 'array': {
+      if (node.elements.length === 0) {
+        ctx.out += '[]';
+        return;
+      }
+      const inline = inlineArray(node, ctx);
+      if (inline.length <= ctx.maxInlineWidth) {
+        ctx.out += inline;
+        return;
+      }
+      const joined = joinedArrayChildren(node, ctx);
+      if (joined.length > 0 && joined.length <= ctx.maxInlineWidth) {
+        ctx.out += '[\n' + ctx.indent.repeat(depth + 1) + joined + '\n' + ctx.indent.repeat(depth) + ']';
+        return;
+      }
+      // wrapper_multi
+      ctx.out += '[';
+      for (const el of node.elements) {
+        ctx.out += '\n' + ctx.indent.repeat(depth + 1);
+        renderInlineValue(el, ctx, depth + 1);
+      }
+      ctx.out += '\n' + ctx.indent.repeat(depth) + ']';
+      return;
+    }
+  }
+}
+
+function sortPropsIf(props: AstProperty[], sortKeys: boolean): AstProperty[] {
+  return sortKeys
+    ? [...props].sort((a, b) => a.key.value.localeCompare(b.key.value))
+    : props;
+}
+
+/** Single-line rendering of an object including outer braces. */
+function inlineObject(obj: AstObject, ctx: InlineCtx): string {
+  const props = sortPropsIf(obj.properties, ctx.sortKeys);
+  let s = '{ ';
+  let first = true;
+  for (const prop of props) {
+    if (!first) s += ', ';
+    first = false;
+    s += serializeKey(prop.key.value) + ' = ' + inlineValueStr(prop.value, ctx);
+  }
+  s += ' }';
+  return s;
+}
+
+function inlineArray(arr: AstArray, ctx: InlineCtx): string {
+  let s = '[ ';
+  let first = true;
+  for (const el of arr.elements) {
+    if (!first) s += ', ';
+    first = false;
+    s += inlineValueStr(el, ctx);
+  }
+  s += ' ]';
+  return s;
+}
+
+function inlineValueStr(node: AstValue, ctx: InlineCtx): string {
+  switch (node.kind) {
+    case 'string':
+      return prettyString(node);
+    case 'number':
+      return serializeNumber(node.value);
+    case 'boolean':
+      return node.value ? 'true' : 'false';
+    case 'null':
+      return 'null';
+    case 'object':
+      return node.properties.length === 0 ? '{}' : inlineObject(node, ctx);
+    case 'array':
+      return node.elements.length === 0 ? '[]' : inlineArray(node, ctx);
+  }
+}
+
+function joinedObjectChildren(obj: AstObject, ctx: InlineCtx): string {
+  const props = sortPropsIf(obj.properties, ctx.sortKeys);
+  let s = '';
+  let first = true;
+  for (const prop of props) {
+    if (!first) s += ', ';
+    first = false;
+    s += serializeKey(prop.key.value) + ' = ' + inlineValueStr(prop.value, ctx);
+  }
+  return s;
+}
+
+function joinedArrayChildren(arr: AstArray, ctx: InlineCtx): string {
+  let s = '';
+  let first = true;
+  for (const el of arr.elements) {
+    if (!first) s += ', ';
+    first = false;
+    s += inlineValueStr(el, ctx);
+  }
+  return s;
 }
