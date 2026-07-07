@@ -1,4 +1,4 @@
-package jhon;
+package io.github.zjhken;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -6,19 +6,85 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * JHON - JinHui's Object Notation.
+ * JHON (JinHui's Object Notation) parser and serializer for Java.
  *
- * Parser and serializer mirroring rust/src/lib.rs. Strict per SPEC.md — every
- * error case in §8 raises JhonParseException with 1-based line and column.
+ * <p>JHON is a {@code key=value} configuration format. The top level is a flat
+ * sequence of key-value pairs (optionally wrapped in {@code { }}), separated by
+ * commas or newlines. Comments ({@code //} line and {@code /* &#42;/} block),
+ * Rust-style raw strings, quoted and bare keys, trailing commas, and underscore
+ * digit separators are all supported.
+ *
+ * <p>This class is the sole public entry point. It exposes static, stateless
+ * methods and is safe to call concurrently from multiple threads. The class is
+ * {@code final} with a private constructor and cannot be instantiated.
+ *
+ * <p>The parser is strict: every error case defined in the JHON specification
+ * raises a {@link JhonParseException} carrying 1-based line and column numbers
+ * (and, for duplicate keys, the offending key name).
+ *
+ * <p>Round-trip example:
+ * <pre>{@code
+ * Map<String, Object> doc =
+ *     (Map<String, Object>) Jhon.parse("name = \"jhon\"\nversion = 2");
+ * String compact = Jhon.serialize(doc);
+ * String pretty  = Jhon.serializePretty(doc, "  ", 80);
+ * }</pre>
+ *
+ * @author Zhang Jinhui
+ * @see JhonParseException
+ * @since 2.1.1
  */
 public final class Jhon {
 
-    private Jhon() {}
+    private Jhon() {
+    }
 
     // ==================================================================================
     // Public API
     // ==================================================================================
 
+    /**
+     * Parses a JHON document into Java objects.
+     *
+     * <p>The parser auto-detects document mode (object vs array) per the JHON
+     * specification: the first top-level token determines the form. A leading
+     * {@code key =} sequence selects object mode (the result is a
+     * {@code Map<String, Object>}); any other leading token selects array mode
+     * (the result is a {@code List<Object>}). Braced ({@code { ... }}) and
+     * bracketed ({@code [ ... ]}) forms always parse as object and array
+     * respectively.
+     *
+     * <p>Returned value types:
+     * <ul>
+     *   <li>strings → {@link String}</li>
+     *   <li>integers within {@code long} range → {@link Long}</li>
+     *   <li>arbitrary-precision integers → {@link java.math.BigInteger}</li>
+     *   <li>floating-point numbers → {@link Double}</li>
+     *   <li>booleans → {@link Boolean}</li>
+     *   <li>objects → {@code Map<String, Object>} (insertion-ordered)</li>
+     *   <li>arrays → {@code List<Object>}</li>
+     * </ul>
+     *
+     * <p>Edge cases:
+     * <ul>
+     *   <li>Empty input, whitespace-only input, or comments-only input returns
+     *       {@code null} (the JHON "Empty" form) — not an empty map or list.</li>
+     *   <li>Duplicate object keys raise {@link JhonParseException}; the offending
+     *       key is available via {@link JhonParseException#getDuplicateKey()}.</li>
+     * </ul>
+     *
+     * <p>Example:
+     * <pre>{@code
+     * Object doc = Jhon.parse("name = \"jhon\"\nage = 2");
+     * // doc is a LinkedHashMap: { name="jhon", age=2L }
+     * }</pre>
+     *
+     * @param input the JHON text to parse; {@code null} is treated as empty
+     * @return a {@code Map<String, Object>}, a {@code List<Object>}, or
+     *         {@code null} for empty input
+     * @throws JhonParseException if the input violates the JHON specification;
+     *         the exception carries 1-based line/column information
+     */
     public static Object parse(String input) throws JhonParseException {
         Parser p = new Parser(input);
         try {
@@ -38,7 +104,8 @@ public final class Jhon {
                 try {
                     p.parseKey();
                     p.skipWsAndComments();
-                    if (p.current() == '=') objectMode = true;
+                    if (p.current() == '=')
+                        objectMode = true;
                 } catch (ParseError ignored) {
                     // Not a valid key — fall through to array mode.
                 }
@@ -55,27 +122,74 @@ public final class Jhon {
         }
     }
 
+    /**
+     * Serializes a Java value to compact JHON text with no indentation or
+     * newlines between elements.
+     *
+     * <p>Accepted value types:
+     * <ul>
+     *   <li>{@link String} → quoted JHON string</li>
+     *   <li>{@link Boolean} → {@code true} / {@code false}</li>
+     *   <li>{@link java.math.BigInteger}, {@link Long}, {@link Integer},
+     *       {@link Short}, {@link java.math.BigDecimal} → numeric literal</li>
+     *   <li>{@link Double}, {@link Float} → numeric literal (uses
+     *       floating-point form when needed)</li>
+     *   <li>{@code Map<String, Object>} → {@code key = value} pairs</li>
+     *   <li>{@link java.util.List} or arrays → {@code [ a, b, ... ]}</li>
+     *   <li>{@code null} → the literal token {@code null}</li>
+     * </ul>
+     *
+     * @param value the value to serialize; may be {@code null}
+     * @return compact JHON text; serializing {@code null} yields the string
+     *         {@code "null"}
+     */
     public static String serialize(Object value) {
         StringBuilder sb = new StringBuilder();
         serializeTopCompact(value, sb);
         return sb.toString();
     }
 
+    /**
+     * Pretty-prints a Java value to multi-line JHON text using the legacy
+     * always-multi-line layout (no short-container inlining).
+     *
+     * <p>Equivalent to {@code serializePretty(value, indent, 0)}.
+     *
+     * @param value  the value to serialize; may be {@code null}
+     * @param indent the indentation string repeated per nesting level;
+     *               {@code null} or empty falls back to two spaces ({@code "  "})
+     * @return multi-line JHON text
+     * @see #serializePretty(Object, String, int)
+     */
     public static String serializePretty(Object value, String indent) {
         return serializePretty(value, indent, 0);
     }
 
     /**
-     * Pretty-print with short-container inlining. When {@code maxInlineWidth > 0}
-     * a non-empty container whose single-line form fits within that many
-     * characters is emitted inline as {@code { k = v, ... }} /
-     * {@code [ a, b, ... ]}. Containers whose joined children fit but the
-     * whole doesn't use a 3-line wrapper. Otherwise expands multi-line.
-     * {@code maxInlineWidth == 0} preserves the legacy always-multi-line
-     * behavior.
+     * Pretty-prints a Java value to multi-line JHON text with optional
+     * short-container inlining.
+     *
+     * <p>When {@code maxInlineWidth > 0}, a non-empty container whose
+     * single-line form fits within that many characters is emitted inline as
+     * {@code { k = v, ... }} or {@code [ a, b, ... ]}. Containers whose joined
+     * children fit but whose surrounding wrapper doesn't use a 3-line form.
+     * Everything else expands to one-element-per-line multi-line layout.
+     *
+     * <p>When {@code maxInlineWidth == 0}, the legacy always-multi-line
+     * behavior is preserved (no inline folding).
+     *
+     * @param value          the value to serialize; may be {@code null}
+     * @param indent         the indentation string repeated per nesting level;
+     *                       {@code null} or empty falls back to two spaces
+     *                       ({@code "  "})
+     * @param maxInlineWidth maximum character width for inline containers;
+     *                       {@code 0} disables inlining
+     * @return multi-line JHON text, with short containers inlined when
+     *         {@code maxInlineWidth > 0}
      */
     public static String serializePretty(Object value, String indent, int maxInlineWidth) {
-        if (indent == null || indent.isEmpty()) indent = "  ";
+        if (indent == null || indent.isEmpty())
+            indent = "  ";
         StringBuilder sb = new StringBuilder();
         // Both maxInlineWidth==0 and >0 route through the inline-aware path.
         // At 0, no container fits inline so everything lands in wrapper_multi
@@ -86,6 +200,18 @@ public final class Jhon {
         return sb.toString();
     }
 
+    /**
+     * Convenience dispatcher that selects compact or pretty serialization in
+     * a single call.
+     *
+     * @param value   the value to serialize; may be {@code null}
+     * @param pretty  {@code true} to route to
+     *                {@link #serializePretty(Object, String)};
+     *                {@code false} to route to {@link #serialize(Object)}
+     * @param indent  indentation string for pretty mode (ignored when
+     *                {@code pretty == false})
+     * @return JHON text in the requested layout
+     */
     public static String serialize(Object value, boolean pretty, String indent) {
         if (pretty) {
             return serializePretty(value, indent);
@@ -116,7 +242,17 @@ public final class Jhon {
         }
     }
 
-    /** Public exception thrown by {@link #parse(String)}. */
+    /**
+     * Checked exception raised when {@link #parse(String)} rejects its input.
+     *
+     * <p>Carries the precise source location of the error (1-based line and
+     * column for both start and end of the offending span, plus a 0-based
+     * character offset) so callers can produce accurate diagnostics. When the
+     * failure is a duplicate object key, {@link #getDuplicateKey()} returns
+     * the offending key name.
+     *
+     * @see #parse(String)
+     */
     public static class JhonParseException extends Exception {
         private final int line;
         private final int column;
@@ -135,13 +271,63 @@ public final class Jhon {
             this.key = e.key;
         }
 
-        public int getLine() { return line; }
-        public int getColumn() { return column; }
-        public int getEndLine() { return endLine; }
-        public int getEndColumn() { return endColumn; }
-        public int getPosition() { return position; }
-        public String getDuplicateKey() { return key; }
+        /**
+         * @return 1-based line number where the error starts
+         */
+        public int getLine() {
+            return line;
+        }
 
+        /**
+         * @return 1-based column number where the error starts
+         */
+        public int getColumn() {
+            return column;
+        }
+
+        /**
+         * @return 1-based line number where the error ends (inclusive of the
+         *         offending span)
+         */
+        public int getEndLine() {
+            return endLine;
+        }
+
+        /**
+         * @return 1-based column number where the error ends
+         */
+        public int getEndColumn() {
+            return endColumn;
+        }
+
+        /**
+         * @return 0-based character offset into the original input where the
+         *         error starts
+         */
+        public int getPosition() {
+            return position;
+        }
+
+        /**
+         * @return the offending key name when this error represents a
+         *         duplicate object key, otherwise {@code null}
+         */
+        public String getDuplicateKey() {
+            return key;
+        }
+
+        /**
+         * Formats this error as a human-readable message.
+         *
+         * <p>Formats:
+         * <ul>
+         *   <li>duplicate key: {@code "duplicate key at LINE:COL: \"key\""}</li>
+         *   <li>general parse error: {@code "parse error at LINE:COL: msg"}</li>
+         *   <li>when location is unavailable: {@code "parse error: msg"}</li>
+         * </ul>
+         *
+         * @return formatted diagnostic message
+         */
         @Override
         public String getMessage() {
             if (key != null) {
@@ -184,7 +370,8 @@ public final class Jhon {
         }
 
         void advance() {
-            if (pos >= len) return;
+            if (pos >= len)
+                return;
             char c = input.charAt(pos);
             if (c == '\n') {
                 line++;
@@ -212,7 +399,8 @@ public final class Jhon {
                 } else if (c == '/' && peek(1) == '/') {
                     advance();
                     advance();
-                    while (pos < len && input.charAt(pos) != '\n') advance();
+                    while (pos < len && input.charAt(pos) != '\n')
+                        advance();
                 } else if (c == '/' && peek(1) == '*') {
                     advance();
                     advance();
@@ -225,7 +413,8 @@ public final class Jhon {
                             closed = true;
                             break;
                         }
-                        if (d == '\n') sawNewline = true;
+                        if (d == '\n')
+                            sawNewline = true;
                         advance();
                     }
                     if (!closed) {
@@ -246,9 +435,10 @@ public final class Jhon {
             if (current() == ',') {
                 sawComma = true;
                 advance();
-                if (skipWsAndComments()) sawNewline = true;
+                if (skipWsAndComments())
+                    sawNewline = true;
             }
-            return new boolean[]{sawNewline, sawComma};
+            return new boolean[] { sawNewline, sawComma };
         }
 
         @SuppressWarnings("unchecked")
@@ -258,7 +448,8 @@ public final class Jhon {
             while (pos < len) {
                 parsePropertyInto(obj);
                 boolean[] sep = skipInterItemSeparator();
-                if (pos >= len) break;
+                if (pos >= len)
+                    break;
                 if (!sep[0] && !sep[1]) {
                     throw syntaxErr("items on the same line must be separated by a comma");
                 }
@@ -276,7 +467,8 @@ public final class Jhon {
                 }
                 arr.add(parseValue());
                 boolean[] sep = skipInterItemSeparator();
-                if (pos >= len) break;
+                if (pos >= len)
+                    break;
                 if (!sep[0] && !sep[1]) {
                     throw syntaxErr("items on the same line must be separated by a comma");
                 }
@@ -323,9 +515,8 @@ public final class Jhon {
             Object value = parseValue();
             if (obj.containsKey(key)) {
                 throw new ParseError(
-                    "duplicate key \"" + key + "\"",
-                    line, col, line, col + 1, pos, key
-                );
+                        "duplicate key \"" + key + "\"",
+                        line, col, line, col + 1, pos, key);
             }
             obj.put(key, value);
         }
@@ -341,7 +532,8 @@ public final class Jhon {
             }
             // Bare key — scan until delimiter per SPEC §3.3.
             int start = pos;
-            while (pos < len && !isKeyDelimiter(input.charAt(pos))) advance();
+            while (pos < len && !isKeyDelimiter(input.charAt(pos)))
+                advance();
             if (pos == start) {
                 throw syntaxErr("empty key");
             }
@@ -364,11 +556,16 @@ public final class Jhon {
                 }
                 throw syntaxErr("unexpected character in value: " + c);
             }
-            if (c == '[') return parseArray();
-            if (c == '{') return parseNestedObject();
-            if (c == '-' || (c >= '0' && c <= '9')) return parseNumber();
-            if (c == 't' || c == 'f') return parseBoolean();
-            if (c == 'n') return parseNull();
+            if (c == '[')
+                return parseArray();
+            if (c == '{')
+                return parseNestedObject();
+            if (c == '-' || (c >= '0' && c <= '9'))
+                return parseNumber();
+            if (c == 't' || c == 'f')
+                return parseBoolean();
+            if (c == 'n')
+                return parseNull();
             throw syntaxErr("unexpected character in value: " + c);
         }
 
@@ -382,8 +579,8 @@ public final class Jhon {
                 }
                 if (c < 0x20 || c == 0x7f) {
                     throw syntaxErr("literal control character 0x"
-                        + Integer.toHexString(c).toUpperCase()
-                        + " in string; use an escape or a raw string");
+                            + Integer.toHexString(c).toUpperCase()
+                            + " in string; use an escape or a raw string");
                 }
                 if (c == quote) {
                     advance();
@@ -397,15 +594,33 @@ public final class Jhon {
                     }
                     advance();
                     switch (esc) {
-                        case 'n': sb.append('\n'); break;
-                        case 'r': sb.append('\r'); break;
-                        case 't': sb.append('\t'); break;
-                        case 'b': sb.append((char) 0x08); break;
-                        case 'f': sb.append((char) 0x0c); break;
-                        case '\\': sb.append('\\'); break;
-                        case '"': sb.append('"'); break;
-                        case '\'': sb.append('\''); break;
-                        case '/': sb.append('/'); break;
+                        case 'n':
+                            sb.append('\n');
+                            break;
+                        case 'r':
+                            sb.append('\r');
+                            break;
+                        case 't':
+                            sb.append('\t');
+                            break;
+                        case 'b':
+                            sb.append((char) 0x08);
+                            break;
+                        case 'f':
+                            sb.append((char) 0x0c);
+                            break;
+                        case '\\':
+                            sb.append('\\');
+                            break;
+                        case '"':
+                            sb.append('"');
+                            break;
+                        case '\'':
+                            sb.append('\'');
+                            break;
+                        case '/':
+                            sb.append('/');
+                            break;
                         case 'x': {
                             int v = parseHexDigits(2, "\\x");
                             sb.append((char) v);
@@ -415,8 +630,8 @@ public final class Jhon {
                             int v = parseHexDigits(4, "\\u");
                             if (v >= 0xd800 && v <= 0xdfff) {
                                 throw syntaxErr("surrogate code point U+"
-                                    + String.format("%04X", v)
-                                    + " requires a pair; surrogate handling is not yet implemented");
+                                        + String.format("%04X", v)
+                                        + " requires a pair; surrogate handling is not yet implemented");
                             }
                             sb.append((char) v); // works for BMP; above BMP needs surrogate pair
                             break;
@@ -459,16 +674,19 @@ public final class Jhon {
             // Build closing pattern.
             StringBuilder closingSb = new StringBuilder();
             closingSb.append('"');
-            for (int i = 0; i < hashCount; i++) closingSb.append('#');
+            for (int i = 0; i < hashCount; i++)
+                closingSb.append('#');
             String closing = closingSb.toString();
             int idx = input.indexOf(closing, start);
             if (idx < 0) {
-                while (pos < len) advance();
+                while (pos < len)
+                    advance();
                 throw syntaxErr("unterminated raw string (expected closing " + closing + ")");
             }
             String value = input.substring(start, idx);
             int target = idx + closing.length();
-            while (pos < target) advance();
+            while (pos < target)
+                advance();
             return value;
         }
 
@@ -481,9 +699,12 @@ public final class Jhon {
             int radix = 0;
             if (current() == '0') {
                 char next = peek(1);
-                if (next == 'x') radix = 16;
-                else if (next == 'o') radix = 8;
-                else if (next == 'b') radix = 2;
+                if (next == 'x')
+                    radix = 16;
+                else if (next == 'o')
+                    radix = 8;
+                else if (next == 'b')
+                    radix = 2;
                 else if (next == 'X' || next == 'O' || next == 'B') {
                     throw syntaxErr("uppercase radix prefix 0" + next + " not allowed; use lowercase");
                 }
@@ -524,7 +745,8 @@ public final class Jhon {
             if (radix != 0) {
                 String signed = negative ? "-" + literal : literal;
                 BigInteger bi = new BigInteger(literal, radix);
-                if (negative) bi = bi.negate();
+                if (negative)
+                    bi = bi.negate();
                 // Try to fit into long, otherwise return double.
                 try {
                     return bi.longValueExact();
@@ -618,11 +840,13 @@ public final class Jhon {
 
         Object parseBoolean() throws ParseError {
             if (matches("true")) {
-                for (int i = 0; i < 4; i++) advance();
+                for (int i = 0; i < 4; i++)
+                    advance();
                 return Boolean.TRUE;
             }
             if (matches("false")) {
-                for (int i = 0; i < 5; i++) advance();
+                for (int i = 0; i < 5; i++)
+                    advance();
                 return Boolean.FALSE;
             }
             throw syntaxErr("invalid boolean value");
@@ -630,16 +854,19 @@ public final class Jhon {
 
         Object parseNull() throws ParseError {
             if (matches("null")) {
-                for (int i = 0; i < 4; i++) advance();
+                for (int i = 0; i < 4; i++)
+                    advance();
                 return null;
             }
             throw syntaxErr("invalid null value");
         }
 
         boolean matches(String lit) {
-            if (pos + lit.length() > len) return false;
+            if (pos + lit.length() > len)
+                return false;
             for (int i = 0; i < lit.length(); i++) {
-                if (input.charAt(pos + i) != lit.charAt(i)) return false;
+                if (input.charAt(pos + i) != lit.charAt(i))
+                    return false;
             }
             return true;
         }
@@ -678,22 +905,25 @@ public final class Jhon {
     // ==================================================================================
 
     // Top-level dispatch per SPEC.md §2:
-    //   - empty containers and null emit nothing (the "Empty" form);
-    //   - top-level arrays emit bare (no surrounding []);
-    //   - everything else falls through to serializeCompact (which preserves
-    //     nested [] and nested null literals).
+    // - empty containers and null emit nothing (the "Empty" form);
+    // - top-level arrays emit bare (no surrounding []);
+    // - everything else falls through to serializeCompact (which preserves
+    // nested [] and nested null literals).
     static void serializeTopCompact(Object v, StringBuilder sb) {
-        if (v == null) return;
+        if (v == null)
+            return;
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
-            if (obj.isEmpty()) return;
+            if (obj.isEmpty())
+                return;
             serializeObjectCompact(obj, sb);
             return;
         }
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) return;
+            if (arr.isEmpty())
+                return;
             serializeArrayContentsCompact(arr, sb);
             return;
         }
@@ -702,17 +932,20 @@ public final class Jhon {
 
     // Top-level pretty dispatch. Mirrors serializeTopCompact.
     static void serializeTopPretty(Object v, String indent, StringBuilder sb) {
-        if (v == null) return;
+        if (v == null)
+            return;
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
-            if (obj.isEmpty()) return;
+            if (obj.isEmpty())
+                return;
             serializeObjectPretty(obj, indent, 0, false, sb);
             return;
         }
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) return;
+            if (arr.isEmpty())
+                return;
             serializeTopArrayPretty(arr, indent, sb);
             return;
         }
@@ -725,7 +958,8 @@ public final class Jhon {
     static void serializeTopArrayPretty(ArrayList<?> arr, String indent, StringBuilder sb) {
         boolean first = true;
         for (Object v : arr) {
-            if (!first) sb.append('\n');
+            if (!first)
+                sb.append('\n');
             first = false;
             if (v instanceof Map) {
                 @SuppressWarnings("unchecked")
@@ -737,7 +971,8 @@ public final class Jhon {
                 sb.append("{\n");
                 boolean firstPair = true;
                 for (Map.Entry<String, Object> e : m.entrySet()) {
-                    if (!firstPair) sb.append('\n');
+                    if (!firstPair)
+                        sb.append('\n');
                     firstPair = false;
                     sb.append(indent);
                     serializeKey(e.getKey(), sb);
@@ -760,7 +995,8 @@ public final class Jhon {
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
-            if (obj.isEmpty()) return;
+            if (obj.isEmpty())
+                return;
             serializeObjectCompact(obj, sb);
             return;
         }
@@ -808,7 +1044,8 @@ public final class Jhon {
     static void serializeArrayContentsCompact(ArrayList<?> arr, StringBuilder sb) {
         boolean first = true;
         for (Object el : arr) {
-            if (!first) sb.append(',');
+            if (!first)
+                sb.append(',');
             first = false;
             if (el instanceof Map) {
                 @SuppressWarnings("unchecked")
@@ -829,7 +1066,8 @@ public final class Jhon {
     static void serializeObjectCompact(Map<String, Object> obj, StringBuilder sb) {
         boolean first = true;
         for (Map.Entry<String, Object> e : obj.entrySet()) {
-            if (!first) sb.append(',');
+            if (!first)
+                sb.append(',');
             first = false;
             serializeKey(e.getKey(), sb);
             sb.append('=');
@@ -851,12 +1089,16 @@ public final class Jhon {
     }
 
     static void serializePretty(Object v, String indent, int depth, boolean inArray, StringBuilder sb) {
-        if (v == null) { sb.append("null"); return; }
+        if (v == null) {
+            sb.append("null");
+            return;
+        }
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
             if (obj.isEmpty()) {
-                if (inArray || depth > 0) sb.append("{}");
+                if (inArray || depth > 0)
+                    sb.append("{}");
                 return;
             }
             serializeObjectPretty(obj, indent, depth, inArray, sb);
@@ -864,7 +1106,10 @@ public final class Jhon {
         }
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) { sb.append("[]"); return; }
+            if (arr.isEmpty()) {
+                sb.append("[]");
+                return;
+            }
             serializeArrayPretty(arr, indent, depth, sb);
             return;
         }
@@ -872,33 +1117,42 @@ public final class Jhon {
         serializeCompact(v, sb);
     }
 
-    static void serializeObjectPretty(Map<String, Object> obj, String indent, int depth, boolean inArray, StringBuilder sb) {
+    static void serializeObjectPretty(Map<String, Object> obj, String indent, int depth, boolean inArray,
+            StringBuilder sb) {
         if (inArray) {
-            for (int i = 0; i < depth + 1; i++) sb.append(indent);
+            for (int i = 0; i < depth + 1; i++)
+                sb.append(indent);
             sb.append("{\n");
         } else if (depth > 0) {
             sb.append("{\n");
         }
         boolean first = true;
         for (Map.Entry<String, Object> e : obj.entrySet()) {
-            if (!first) sb.append('\n');
+            if (!first)
+                sb.append('\n');
             first = false;
             int innerDepth;
-            if (inArray) innerDepth = depth + 2;
-            else if (depth == 0) innerDepth = 0;
-            else innerDepth = depth;
-            for (int i = 0; i < innerDepth; i++) sb.append(indent);
+            if (inArray)
+                innerDepth = depth + 2;
+            else if (depth == 0)
+                innerDepth = 0;
+            else
+                innerDepth = depth;
+            for (int i = 0; i < innerDepth; i++)
+                sb.append(indent);
             serializeKey(e.getKey(), sb);
             sb.append(" = ");
             serializePretty(e.getValue(), indent, depth + 1, false, sb);
         }
         if (inArray) {
             sb.append('\n');
-            for (int i = 0; i < depth + 1; i++) sb.append(indent);
+            for (int i = 0; i < depth + 1; i++)
+                sb.append(indent);
             sb.append('}');
         } else if (depth > 0) {
             sb.append('\n');
-            for (int i = 0; i < depth - 1; i++) sb.append(indent);
+            for (int i = 0; i < depth - 1; i++)
+                sb.append(indent);
             sb.append('}');
         }
     }
@@ -907,17 +1161,20 @@ public final class Jhon {
         sb.append("[\n");
         boolean first = true;
         for (Object v : arr) {
-            if (!first) sb.append('\n');
+            if (!first)
+                sb.append('\n');
             first = false;
             if (v instanceof Map) {
                 serializePretty(v, indent, depth, true, sb);
             } else {
-                for (int i = 0; i < depth + 1; i++) sb.append(indent);
+                for (int i = 0; i < depth + 1; i++)
+                    sb.append(indent);
                 serializePretty(v, indent, depth + 1, false, sb);
             }
         }
         sb.append('\n');
-        for (int i = 0; i < depth; i++) sb.append(indent);
+        for (int i = 0; i < depth; i++)
+            sb.append(indent);
         sb.append(']');
     }
 
@@ -932,13 +1189,16 @@ public final class Jhon {
     // ==================================================================================
 
     static void serializeTopPrettyInline(Object v, String indent, int maxInlineWidth, StringBuilder sb) {
-        if (v == null) return;
+        if (v == null)
+            return;
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) return;
+            if (arr.isEmpty())
+                return;
             boolean first = true;
             for (Object el : arr) {
-                if (!first) sb.append('\n');
+                if (!first)
+                    sb.append('\n');
                 first = false;
                 renderPrettyInline(el, indent, 0, maxInlineWidth, sb);
             }
@@ -946,10 +1206,12 @@ public final class Jhon {
         }
         if (v instanceof Map) {
             Map<?, ?> obj = (Map<?, ?>) v;
-            if (obj.isEmpty()) return;
+            if (obj.isEmpty())
+                return;
             boolean first = true;
             for (Map.Entry<?, ?> e : obj.entrySet()) {
-                if (!first) sb.append('\n');
+                if (!first)
+                    sb.append('\n');
                 first = false;
                 serializeKey((String) e.getKey(), sb);
                 sb.append(" = ");
@@ -962,13 +1224,26 @@ public final class Jhon {
 
     static void renderPrettyInline(Object v, String indent, int depth, int maxInlineWidth, StringBuilder sb) {
         // Scalars
-        if (v == null) { sb.append("null"); return; }
-        if (v instanceof String) { serializeString((String) v, sb); return; }
-        if (v instanceof Boolean) { sb.append(((Boolean) v) ? "true" : "false"); return; }
-        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
-            sb.append(((Number) v).longValue()); return;
+        if (v == null) {
+            sb.append("null");
+            return;
         }
-        if (v instanceof BigInteger) { sb.append(v.toString()); return; }
+        if (v instanceof String) {
+            serializeString((String) v, sb);
+            return;
+        }
+        if (v instanceof Boolean) {
+            sb.append(((Boolean) v) ? "true" : "false");
+            return;
+        }
+        if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
+            sb.append(((Number) v).longValue());
+            return;
+        }
+        if (v instanceof BigInteger) {
+            sb.append(v.toString());
+            return;
+        }
         if (v instanceof Double || v instanceof Float) {
             double d = ((Number) v).doubleValue();
             if (d == Math.rint(d) && d >= -9.2e18 && d <= 9.2e18) {
@@ -982,9 +1257,15 @@ public final class Jhon {
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
-            if (obj.isEmpty()) { sb.append("{}"); return; }
+            if (obj.isEmpty()) {
+                sb.append("{}");
+                return;
+            }
             String inline = inlineValue(v);
-            if (inline.length() <= maxInlineWidth) { sb.append(inline); return; }
+            if (inline.length() <= maxInlineWidth) {
+                sb.append(inline);
+                return;
+            }
             String joined = joinedObjectChildren(obj);
             if (!joined.isEmpty() && joined.length() <= maxInlineWidth) {
                 sb.append('{').append('\n');
@@ -1012,9 +1293,15 @@ public final class Jhon {
 
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) { sb.append("[]"); return; }
+            if (arr.isEmpty()) {
+                sb.append("[]");
+                return;
+            }
             String inline = inlineValue(v);
-            if (inline.length() <= maxInlineWidth) { sb.append(inline); return; }
+            if (inline.length() <= maxInlineWidth) {
+                sb.append(inline);
+                return;
+            }
             String joined = joinedArrayChildren(arr);
             if (!joined.isEmpty() && joined.length() <= maxInlineWidth) {
                 sb.append('[').append('\n');
@@ -1040,21 +1327,25 @@ public final class Jhon {
     }
 
     static void appendIndent(StringBuilder sb, String indent, int n) {
-        for (int i = 0; i < n; i++) sb.append(indent);
+        for (int i = 0; i < n; i++)
+            sb.append(indent);
     }
 
     static String inlineValue(Object v) {
-        if (v == null) return "null";
+        if (v == null)
+            return "null";
         if (v instanceof String) {
             StringBuilder sb = new StringBuilder();
             serializeString((String) v, sb);
             return sb.toString();
         }
-        if (v instanceof Boolean) return ((Boolean) v) ? "true" : "false";
+        if (v instanceof Boolean)
+            return ((Boolean) v) ? "true" : "false";
         if (v instanceof Long || v instanceof Integer || v instanceof Short || v instanceof Byte) {
             return Long.toString(((Number) v).longValue());
         }
-        if (v instanceof BigInteger) return v.toString();
+        if (v instanceof BigInteger)
+            return v.toString();
         if (v instanceof Double || v instanceof Float) {
             double d = ((Number) v).doubleValue();
             if (d == Math.rint(d) && d >= -9.2e18 && d <= 9.2e18) {
@@ -1065,11 +1356,13 @@ public final class Jhon {
         if (v instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> obj = (Map<String, Object>) v;
-            if (obj.isEmpty()) return "{}";
+            if (obj.isEmpty())
+                return "{}";
             StringBuilder sb = new StringBuilder("{ ");
             boolean first = true;
             for (Map.Entry<String, Object> e : obj.entrySet()) {
-                if (!first) sb.append(", ");
+                if (!first)
+                    sb.append(", ");
                 first = false;
                 serializeKey(e.getKey(), sb);
                 sb.append(" = ").append(inlineValue(e.getValue()));
@@ -1079,11 +1372,13 @@ public final class Jhon {
         }
         if (v instanceof ArrayList) {
             ArrayList<?> arr = (ArrayList<?>) v;
-            if (arr.isEmpty()) return "[]";
+            if (arr.isEmpty())
+                return "[]";
             StringBuilder sb = new StringBuilder("[ ");
             boolean first = true;
             for (Object el : arr) {
-                if (!first) sb.append(", ");
+                if (!first)
+                    sb.append(", ");
                 first = false;
                 sb.append(inlineValue(el));
             }
@@ -1097,7 +1392,8 @@ public final class Jhon {
         StringBuilder sb = new StringBuilder();
         boolean first = true;
         for (Map.Entry<String, Object> e : obj.entrySet()) {
-            if (!first) sb.append(", ");
+            if (!first)
+                sb.append(", ");
             first = false;
             serializeKey(e.getKey(), sb);
             sb.append(" = ").append(inlineValue(e.getValue()));
@@ -1109,7 +1405,8 @@ public final class Jhon {
         StringBuilder sb = new StringBuilder();
         boolean first = true;
         for (Object el : arr) {
-            if (!first) sb.append(", ");
+            if (!first)
+                sb.append(", ");
             first = false;
             sb.append(inlineValue(el));
         }
@@ -1125,9 +1422,11 @@ public final class Jhon {
     }
 
     static boolean needsQuoting(String s) {
-        if (s.isEmpty()) return true;
+        if (s.isEmpty())
+            return true;
         for (int i = 0; i < s.length(); i++) {
-            if (isKeyDelimiter(s.charAt(i))) return true;
+            if (isKeyDelimiter(s.charAt(i)))
+                return true;
         }
         return false;
     }
@@ -1137,13 +1436,27 @@ public final class Jhon {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             switch (c) {
-                case '\\': sb.append("\\\\"); break;
-                case '"': sb.append("\\\""); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
-                case '\b': sb.append("\\b"); break;
-                case '\f': sb.append("\\f"); break;
+                case '\\':
+                    sb.append("\\\\");
+                    break;
+                case '"':
+                    sb.append("\\\"");
+                    break;
+                case '\n':
+                    sb.append("\\n");
+                    break;
+                case '\r':
+                    sb.append("\\r");
+                    break;
+                case '\t':
+                    sb.append("\\t");
+                    break;
+                case '\b':
+                    sb.append("\\b");
+                    break;
+                case '\f':
+                    sb.append("\\f");
+                    break;
                 default:
                     if (c < 0x20) {
                         sb.append(String.format("\\u%04x", (int) c));
@@ -1161,10 +1474,20 @@ public final class Jhon {
 
     static boolean isKeyDelimiter(char c) {
         switch (c) {
-            case ' ': case '\t': case '\n': case '\r':
-            case '=': case ',':
-            case '{': case '}': case '[': case ']':
-            case '/': case '"': case '\'': case '#':
+            case ' ':
+            case '\t':
+            case '\n':
+            case '\r':
+            case '=':
+            case ',':
+            case '{':
+            case '}':
+            case '[':
+            case ']':
+            case '/':
+            case '"':
+            case '\'':
+            case '#':
                 return true;
         }
         return false;
@@ -1175,8 +1498,10 @@ public final class Jhon {
     }
 
     static int hexValue(char c) {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
         return c - 'A' + 10;
     }
 

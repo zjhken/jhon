@@ -1,6 +1,9 @@
 package jhon;
 
 import org.junit.jupiter.api.Test;
+
+import io.github.zjhken.Jhon;
+
 import org.junit.jupiter.api.DisplayName;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,7 +20,8 @@ class JhonTest {
 
     private static Map<String, Object> obj(Object... kv) {
         LinkedHashMap<String, Object> m = new LinkedHashMap<>();
-        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        for (int i = 0; i < kv.length; i += 2)
+            m.put((String) kv[i], kv[i + 1]);
         return m;
     }
 
@@ -102,18 +106,16 @@ class JhonTest {
     @DisplayName("top-level mixed scalars and object (spec example)")
     void topLevelMixedScalarsAndObject() throws Exception {
         assertEquals(
-            List.of(1L, 2L, "haha", obj("a", 4L)),
-            Jhon.parse("1\n2\n\"haha\"\n{a=4}")
-        );
+                List.of(1L, 2L, "haha", obj("a", 4L)),
+                Jhon.parse("1\n2\n\"haha\"\n{a=4}"));
     }
 
     @Test
     @DisplayName("top-level multiple objects")
     void topLevelMultipleObjects() throws Exception {
         assertEquals(
-            List.of(obj("a", 1L), obj("b", 2L)),
-            Jhon.parse("{a=1}\n{b=2}")
-        );
+                List.of(obj("a", 1L), obj("b", 2L)),
+                Jhon.parse("{a=1}\n{b=2}"));
     }
 
     @Test
@@ -221,9 +223,8 @@ class JhonTest {
     @DisplayName("escape newline and tab")
     void escapesNewlineTab() throws Exception {
         assertEquals(
-            obj("newline", "hello\nworld", "tab", "tab\there"),
-            Jhon.parse("newline=\"hello\\nworld\",tab=\"tab\\there\"")
-        );
+                obj("newline", "hello\nworld", "tab", "tab\there"),
+                Jhon.parse("newline=\"hello\\nworld\",tab=\"tab\\there\""));
     }
 
     @Test
@@ -358,27 +359,24 @@ class JhonTest {
     @DisplayName("basic key value pairs")
     void basicKv() throws Exception {
         assertEquals(
-            obj("name", "John", "age", 30L, "active", true),
-            Jhon.parse("name=\"John\",age=30,active=true")
-        );
+                obj("name", "John", "age", 30L, "active", true),
+                Jhon.parse("name=\"John\",age=30,active=true"));
     }
 
     @Test
     @DisplayName("nested object")
     void nestedObject() throws Exception {
         assertEquals(
-            obj("server", obj("host", "localhost", "port", 8080L)),
-            Jhon.parse("server={host=\"localhost\", port=8080}")
-        );
+                obj("server", obj("host", "localhost", "port", 8080L)),
+                Jhon.parse("server={host=\"localhost\", port=8080}"));
     }
 
     @Test
     @DisplayName("whitespace around equals is insignificant")
     void whitespaceAroundEquals() throws Exception {
         assertEquals(
-            obj("a", 1L, "b", 2L, "c", 3L),
-            Jhon.parse("a=1, b = 2 , c=3")
-        );
+                obj("a", 1L, "b", 2L, "c", 3L),
+                Jhon.parse("a=1, b = 2 , c=3"));
     }
 
     @Test
@@ -396,9 +394,8 @@ class JhonTest {
     @DisplayName("newline-separated multiline")
     void newlineSeparated() throws Exception {
         assertEquals(
-            obj("a", 1L, "b", 2L, "c", 3L),
-            Jhon.parse("a=1\nb=2\nc=3")
-        );
+                obj("a", 1L, "b", 2L, "c", 3L),
+                Jhon.parse("a=1\nb=2\nc=3"));
     }
 
     @Test
@@ -465,18 +462,16 @@ class JhonTest {
     void compactSerialize() {
         // LinkedHashMap preserves insertion order, so no sortKeys needed.
         assertEquals(
-            "name=\"John\",age=30",
-            Jhon.serialize(obj("name", "John", "age", 30L))
-        );
+                "name=\"John\",age=30",
+                Jhon.serialize(obj("name", "John", "age", 30L)));
     }
 
     @Test
     @DisplayName("compact serialize nested object")
     void compactSerializeNested() {
         assertEquals(
-            "server={host=\"localhost\",port=8080}",
-            Jhon.serialize(obj("server", obj("host", "localhost", "port", 8080L)))
-        );
+                "server={host=\"localhost\",port=8080}",
+                Jhon.serialize(obj("server", obj("host", "localhost", "port", 8080L))));
     }
 
     @Test
@@ -492,18 +487,16 @@ class JhonTest {
     @DisplayName("pretty serialize spaces around equals, no commas")
     void prettySerialize() {
         assertEquals(
-            "name = \"John\"\nage = 30",
-            Jhon.serializePretty(obj("name", "John", "age", 30L), "  ")
-        );
+                "name = \"John\"\nage = 30",
+                Jhon.serializePretty(obj("name", "John", "age", 30L), "  "));
     }
 
     @Test
     @DisplayName("pretty serialize nested object")
     void prettySerializeNested() {
         assertEquals(
-            "server = {\n  host = \"localhost\"\n  port = 5432\n}",
-            Jhon.serializePretty(obj("server", obj("host", "localhost", "port", 5432L)), "  ")
-        );
+                "server = {\n  host = \"localhost\"\n  port = 5432\n}",
+                Jhon.serializePretty(obj("server", obj("host", "localhost", "port", 5432L)), "  "));
     }
 
     @Test
@@ -539,35 +532,32 @@ class JhonTest {
         a3.add(a3inner);
 
         Object value = obj(
-            "a1", a1,
-            "a2", obj("b2", obj(
-                "c2", obj("d2", "hahaha"),
-                "c3", obj("d3", "hohohoh")
-            )),
-            "a3", a3
-        );
+                "a1", a1,
+                "a2", obj("b2", obj(
+                        "c2", obj("d2", "hahaha"),
+                        "c3", obj("d3", "hohohoh"))),
+                "a3", a3);
         assertEquals(
-            "a1 = [\n" +
-            "\t{ b1 = [ \"c1\" ] }\n" +
-            "\t{ b1 = [ \"c1\", { d1 = 4 } ] }\n" +
-            "\t{ b1 = [ \"c1\" ] }\n" +
-            "\t{ b1 = [ \"c1\" ] }\n" +
-            "\t{ b1 = [ \"c1\" ] }\n" +
-            "\t{ b1 = [ \"c1\" ] }\n" +
-            "]\n" +
-            "a2 = {\n" +
-            "\tb2 = {\n" +
-            "\t\tc2 = { d2 = \"hahaha\" }\n" +
-            "\t\tc3 = { d3 = \"hohohoh\" }\n" +
-            "\t}\n" +
-            "}\n" +
-            "a3 = [\n" +
-            "\t[\n" +
-            "\t\t\"b4\", \"b5\", \"b6\", { c4 = [ \"d1\", \"d3\" ] }\n" +
-            "\t]\n" +
-            "]",
-            Jhon.serializePretty(value, "\t", 44)
-        );
+                "a1 = [\n" +
+                        "\t{ b1 = [ \"c1\" ] }\n" +
+                        "\t{ b1 = [ \"c1\", { d1 = 4 } ] }\n" +
+                        "\t{ b1 = [ \"c1\" ] }\n" +
+                        "\t{ b1 = [ \"c1\" ] }\n" +
+                        "\t{ b1 = [ \"c1\" ] }\n" +
+                        "\t{ b1 = [ \"c1\" ] }\n" +
+                        "]\n" +
+                        "a2 = {\n" +
+                        "\tb2 = {\n" +
+                        "\t\tc2 = { d2 = \"hahaha\" }\n" +
+                        "\t\tc3 = { d3 = \"hohohoh\" }\n" +
+                        "\t}\n" +
+                        "}\n" +
+                        "a3 = [\n" +
+                        "\t[\n" +
+                        "\t\t\"b4\", \"b5\", \"b6\", { c4 = [ \"d1\", \"d3\" ] }\n" +
+                        "\t]\n" +
+                        "]",
+                Jhon.serializePretty(value, "\t", 44));
     }
 
     @Test
@@ -613,10 +603,9 @@ class JhonTest {
     @DisplayName("round trip compact preserves value")
     void roundTripCompact() throws Exception {
         Object original = obj(
-            "name", "John",
-            "age", 30L,
-            "server", obj("host", "localhost", "port", 5432L)
-        );
+                "name", "John",
+                "age", 30L,
+                "server", obj("host", "localhost", "port", 5432L));
         Object roundTrip = Jhon.parse(Jhon.serialize(original));
         assertEquals(original, roundTrip);
     }
@@ -626,9 +615,8 @@ class JhonTest {
     void radixSerializeAsDecimal() throws Exception {
         assertEquals(255L, Jhon.parse("n=0xff").equals(obj("n", 255L)) ? 255L : 0);
         assertEquals(
-            obj("hex", 255L, "oct", 511L, "bin", 10L),
-            Jhon.parse("hex=0xff, oct=0o777, bin=0b1010")
-        );
+                obj("hex", 255L, "oct", 511L, "bin", 10L),
+                Jhon.parse("hex=0xff, oct=0o777, bin=0b1010"));
     }
 
     // ====================================================================================
@@ -639,9 +627,8 @@ class JhonTest {
     @DisplayName("syntax error reports line and column")
     void syntaxErrorPosition() {
         Jhon.JhonParseException ex = assertThrows(
-            Jhon.JhonParseException.class,
-            () -> Jhon.parse("a=1\nb=+5")
-        );
+                Jhon.JhonParseException.class,
+                () -> Jhon.parse("a=1\nb=+5"));
         assertEquals(2, ex.getLine());
         assertEquals(3, ex.getColumn());
     }
@@ -650,9 +637,8 @@ class JhonTest {
     @DisplayName("duplicate-key error carries the key name")
     void duplicateKeyPosition() {
         Jhon.JhonParseException ex = assertThrows(
-            Jhon.JhonParseException.class,
-            () -> Jhon.parse("a=1, a=2")
-        );
+                Jhon.JhonParseException.class,
+                () -> Jhon.parse("a=1, a=2"));
         assertEquals("a", ex.getDuplicateKey());
     }
 }

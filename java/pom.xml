@@ -4,13 +4,34 @@
     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>dev.jhon</groupId>
+    <groupId>io.github.zjhken</groupId>
     <artifactId>jhon</artifactId>
     <version>2.1.1</version>
     <packaging>jar</packaging>
 
     <name>JHON Parser</name>
     <description>JinHui's Object Notation - A configuration language parser for Java</description>
+    <url>https://github.com/zjhken/jhon</url>
+
+    <licenses>
+        <license>
+            <name>The Apache License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Zhang Jinhui</name>
+            <email>jin.hui.zhang@outlook.com</email>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/zjhken/jhon.git</connection>
+        <developerConnection>scm:git:ssh://github.com:zjhken/jhon.git</developerConnection>
+        <url>http://github.com/zjhken/jhon/tree/main</url>
+    </scm>
 
     <properties>
         <maven.compiler.source>25</maven.compiler.source>
@@ -103,6 +124,32 @@
                     <execution>
                         <id>run-jmh</id>
                         <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Maven JavaDoc Plugin -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.6.3</version>
+                <configuration>
+                    <source>21</source>
+                    <doclint>none</doclint>
+                    <charset>UTF-8</charset>
+                    <encoding>UTF-8</encoding>
+                    <docencoding>UTF-8</docencoding>
+                    <links>
+                        <link>https://docs.oracle.com/en/java/javase/21/docs/api/</link>
+                    </links>
+                    <additionalOptions>-html5</additionalOptions>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>
