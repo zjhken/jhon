@@ -77,11 +77,12 @@ public final class Jhon {
     public static String serializePretty(Object value, String indent, int maxInlineWidth) {
         if (indent == null || indent.isEmpty()) indent = "  ";
         StringBuilder sb = new StringBuilder();
-        if (maxInlineWidth > 0) {
-            serializeTopPrettyInline(value, indent, maxInlineWidth, sb);
-        } else {
-            serializeTopPretty(value, indent, sb);
-        }
+        // Both maxInlineWidth==0 and >0 route through the inline-aware path.
+        // At 0, no container fits inline so everything lands in wrapper_multi
+        // with symmetric multi-line indent. The older legacy path had an
+        // asymmetric-indent bug for objects nested in arrays; routing both
+        // modes through inline-aware eliminates that bug.
+        serializeTopPrettyInline(value, indent, maxInlineWidth, sb);
         return sb.toString();
     }
 

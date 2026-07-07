@@ -206,13 +206,17 @@ impl Default for PrettyOptions {
 
 /// Pretty-print with the full [``PrettyOptions``]. See its docs for the
 /// `max_inline_width` mode.
+///
+/// Both `max_inline_width == 0` and `max_inline_width > 0` route through the
+/// inline-aware path. At `0`, no container ever fits inline (lengths are
+/// always `> 0`), so every non-empty container lands in `wrapper_multi`,
+/// which produces symmetric multi-line output. The older
+/// `serialize_top_pretty` path had an asymmetric-indent bug for objects
+/// nested in arrays; routing both modes through the inline-aware path
+/// eliminates that bug without requiring a separate legacy fix.
 pub fn serialize_pretty_with_options(value: &Value, opts: &PrettyOptions) -> String {
     let mut result = String::new();
-    if opts.max_inline_width > 0 {
-        serialize_pretty_inline_top(value, &opts.indent, opts.max_inline_width, &mut result);
-    } else {
-        serialize_top_pretty(value, &opts.indent, &mut result);
-    }
+    serialize_pretty_inline_top(value, &opts.indent, opts.max_inline_width, &mut result);
     result
 }
 

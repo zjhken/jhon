@@ -686,11 +686,13 @@ class Serializer:
     def serialize_pretty(
         self, value: Any, indent: str = "  ", *, max_inline_width: int = 0
     ) -> str:
+        # Both max_inline_width==0 and >0 route through the inline-aware path.
+        # At 0, no container ever fits inline, so every non-empty container
+        # lands in wrapper_multi with symmetric multi-line indent. The older
+        # _serialize_top_pretty path had an asymmetric-indent bug for objects
+        # nested in arrays; routing both modes through inline-aware fixes that.
         out: List[str] = []
-        if max_inline_width > 0:
-            self._serialize_top_pretty_inline(value, indent, max_inline_width, out)
-        else:
-            self._serialize_top_pretty(value, indent, out)
+        self._serialize_top_pretty_inline(value, indent, max_inline_width, out)
         return "".join(out)
 
     def _serialize_top_pretty(self, v: Any, indent: str, out: List[str]) -> None:

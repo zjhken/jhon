@@ -890,18 +890,17 @@ func Serialize(v Value) string {
 }
 
 // SerializeWithOptions produces compact or pretty JHON output.
-// When opts.Indent is non-empty, the output is pretty-printed (multi-line
-// with spaces around =, no trailing commas, no commas between properties).
-// When opts.MaxInlineWidth > 0 (and opts.Indent is non-empty), short
-// containers are inlined as `{ k = v, ... }` / `[ a, b, ... ]`.
+// When opts.Indent is non-empty, the output is pretty-printed via the
+// inline-aware path: at MaxInlineWidth=0 nothing inlines (every non-empty
+// container lands in wrapper_multi with symmetric multi-line indent); at
+// MaxInlineWidth>0 short containers inline as `{ k = v, ... }` / `[ a, b, ... ]`.
+// The older legacy pretty path had an asymmetric-indent bug for objects
+// nested in arrays; routing both modes through the inline-aware path
+// eliminates that bug.
 func SerializeWithOptions(v Value, opts SerializeOptions) string {
 	var sb strings.Builder
 	if opts.Indent != "" {
-		if opts.MaxInlineWidth > 0 {
-			serializeTopPrettyInline(v, opts, &sb)
-		} else {
-			serializeTopPretty(v, opts, &sb)
-		}
+		serializeTopPrettyInline(v, opts, &sb)
 	} else {
 		serializeTopCompact(v, opts, &sb)
 	}

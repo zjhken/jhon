@@ -243,7 +243,7 @@ function emitPrettyDocument(doc: AstDocument, ctx: PrettyCtx): void {
   const body = doc.body;
   switch (body.kind) {
     case 'object':
-      emitPrettyObject(body, ctx, 0, false);
+      emitPrettyTopObject(body, ctx);
       break;
     case 'array':
       // Top-level array: empty → nothing; non-empty → bare (no surrounding []).
@@ -258,7 +258,7 @@ function emitPrettyDocument(doc: AstDocument, ctx: PrettyCtx): void {
       break;
     default:
       // Top-level scalar: emit the scalar directly.
-      emitPrettyValue(body, ctx, 0, false);
+      emitPrettyValue(body, ctx, 0);
       break;
   }
 
@@ -297,7 +297,7 @@ function emitPrettyTopArray(arr: AstArray, ctx: PrettyCtx): void {
       // emit inline to control indentation precisely.
       emitPrettyTopArrayObject(el, ctx);
     } else {
-      emitPrettyValue(el, ctx, 0, false);
+      emitPrettyValue(el, ctx, 0);
     }
 
     emitInlineTrailingComments(el.trailingComments, ctx);
@@ -322,20 +322,68 @@ function emitPrettyTopArrayObject(obj: AstObject, ctx: PrettyCtx): void {
     first = false;
     ctx.out += indentStr(ctx, 1);
     ctx.out += serializeKey(prop.key.value) + ' = ';
-    emitPrettyValue(prop.value, ctx, 1, false);
+    emitPrettyValue(prop.value, ctx, 1);
   }
   ctx.out += '\n}';
+}
+
+/**
+ * Emit a top-level object: keys at column 0, no surrounding braces (SPEC §2
+ * "object without braces" form). Nested values still get braces via
+ * emitPrettyObject/emitPrettyArray at depth ≥ 1.
+ */
+function emitPrettyTopObject(obj: AstObject, ctx: PrettyCtx): void {
+  const props = ctx.sortKeys
+    ? [...obj.properties].sort((a, b) => a.key.value.localeCompare(b.key.value))
+    : obj.properties;
+
+  if (props.length === 0) {
+    return; // SPEC §2 "Empty" form
+  }
+
+  let first = true;
+  for (const prop of props) {
+    if (!first) ctx.out += '\n';
+    first = false;
+
+    // Leading comments on their own lines at column 0.
+    for (const c of prop.leadingComments) {
+      ctx.out += prettyCommentLine(c) + '\n';
+    }
+    for (const c of prop.key.leadingComments) {
+      ctx.out += prettyCommentLine(c) + '\n';
+    }
+
+    ctx.out += serializeKey(prop.key.value);
+    emitInlineTrailingComments(prop.key.trailingComments, ctx);
+    ctx.out += ' = ';
+
+    if (prop.value.leadingComments.length > 0) {
+      ctx.out = ctx.out.slice(0, -3);
+      ctx.out += '= ';
+      emitInlineLeadingBeforeValue(prop.value.leadingComments, ctx);
+    }
+
+    emitPrettyValue(prop.value, ctx, 0);
+    emitInlineTrailingComments(prop.value.trailingComments, ctx);
+    emitInlineTrailingComments(prop.trailingComments, ctx);
+  }
+
+  // Inner comments at column 0.
+  for (const c of obj.innerComments) {
+    ctx.out += '\n';
+    ctx.out += prettyCommentLine(c);
+  }
 }
 
 function emitPrettyValue(
   node: AstValue | AstObject | AstArray,
   ctx: PrettyCtx,
-  depth: number,
-  inArray: boolean
+  depth: number
 ): void {
   switch (node.kind) {
     case 'object':
-      emitPrettyObject(node, ctx, depth, inArray);
+      emitPrettyObject(node, ctx, depth);
       break;
     case 'array':
       emitPrettyArray(node, ctx, depth);
@@ -358,37 +406,27 @@ function emitPrettyValue(
 function emitPrettyObject(
   obj: AstObject,
   ctx: PrettyCtx,
-  depth: number,
-  inArray: boolean
+  depth: number
 ): void {
   const props = ctx.sortKeys
     ? [...obj.properties].sort((a, b) => a.key.value.localeCompare(b.key.value))
     : obj.properties;
 
-  // Empty object handling matches Rust:
-  // - top-level/in-object bare: emit nothing
-  // - nested in array: emit "{}"
-  // - nested elsewhere: emit "{}"
+  // This function only handles nested objects (depth > 0). Top-level objects
+  // go through `emitPrettyTopObject` (no surrounding braces, keys at column 0).
+  // Convention: depth = "this value's outer indent level". Keys land at
+  // depth+1 indents, closing brace at depth indents — symmetric.
+
   if (props.length === 0) {
-    if (depth === 0 && !inArray) {
-      // bare empty top-level — nothing to emit
-      return;
-    }
     if (obj.innerComments.length > 0) {
-      // Emit `{}` with inner comments inside (multi-line).
-      if (inArray) {
-        ctx.out += indentStr(ctx, depth + 1);
-      } else {
-        ctx.out += '{';
-      }
-      if (inArray) ctx.out += '{';
+      ctx.out += '{';
       ctx.out += '\n';
       for (const c of obj.innerComments) {
-        ctx.out += indentStr(ctx, depth + (inArray ? 2 : 1));
+        ctx.out += indentStr(ctx, depth + 1);
         emitPrettyLineComment(c, ctx);
         ctx.out += '\n';
       }
-      ctx.out += indentStr(ctx, depth + (inArray ? 1 : 0));
+      ctx.out += indentStr(ctx, depth);
       ctx.out += '}';
     } else {
       ctx.out += '{}';
@@ -396,27 +434,24 @@ function emitPrettyObject(
     return;
   }
 
-  // Opening brace for nested objects.
-  if (inArray) {
-    ctx.out += indentStr(ctx, depth + 1) + '{\n';
-  } else if (depth > 0) {
-    ctx.out += '{\n';
-  }
+  ctx.out += '{\n';
 
   let first = true;
   for (const prop of props) {
     if (!first) ctx.out += '\n';
     first = false;
 
-    const innerDepth = inArray ? depth + 2 : depth === 0 ? 0 : depth;
-    ctx.out += indentStr(ctx, innerDepth);
+    const innerDepth = depth + 1;
 
-    // Leading comments for the property go above it.
-    emitLeadingComments(prop.leadingComments, ctx, innerDepth);
-    // Leading comments for the key specifically.
-    emitLeadingComments(prop.key.leadingComments, ctx, innerDepth);
+    // Leading comments above the property — each on its own line at innerDepth.
+    for (const c of prop.leadingComments) {
+      ctx.out += indentStr(ctx, innerDepth) + prettyCommentLine(c) + '\n';
+    }
+    for (const c of prop.key.leadingComments) {
+      ctx.out += indentStr(ctx, innerDepth) + prettyCommentLine(c) + '\n';
+    }
 
-    ctx.out += serializeKey(prop.key.value);
+    ctx.out += indentStr(ctx, innerDepth) + serializeKey(prop.key.value);
 
     // Trailing comments on the key (e.g. `key /* hi */ = 1`) go inline.
     emitInlineTrailingComments(prop.key.trailingComments, ctx);
@@ -425,13 +460,12 @@ function emitPrettyObject(
 
     // Leading comments for the value (block only — line comments can't be inline before value safely).
     if (prop.value.leadingComments.length > 0) {
-      // Place each on its own line above (rare in practice).
       ctx.out = ctx.out.slice(0, -3); // remove ' = '
       ctx.out += '= ';
       emitInlineLeadingBeforeValue(prop.value.leadingComments, ctx);
     }
 
-    emitPrettyValue(prop.value, ctx, depth + 1, false);
+    emitPrettyValue(prop.value, ctx, depth + 1);
 
     // Trailing comment for the property (inline).
     emitInlineTrailingComments(prop.value.trailingComments, ctx);
@@ -441,17 +475,11 @@ function emitPrettyObject(
   // Inner comments (after last child) — emit at innerDepth on their own lines.
   for (const c of obj.innerComments) {
     ctx.out += '\n';
-    const innerDepth = inArray ? depth + 2 : depth === 0 ? 0 : depth;
-    ctx.out += indentStr(ctx, innerDepth);
+    ctx.out += indentStr(ctx, depth + 1);
     emitPrettyLineComment(c, ctx);
   }
 
-  // Closing brace.
-  if (inArray) {
-    ctx.out += '\n' + indentStr(ctx, depth + 1) + '}';
-  } else if (depth > 0) {
-    ctx.out += '\n' + indentStr(ctx, depth - 1) + '}';
-  }
+  ctx.out += '\n' + indentStr(ctx, depth) + '}';
 }
 
 function emitPrettyArray(arr: AstArray, ctx: PrettyCtx, depth: number): void {
@@ -477,14 +505,15 @@ function emitPrettyArray(arr: AstArray, ctx: PrettyCtx, depth: number): void {
     if (!first) ctx.out += '\n';
     first = false;
 
-    emitLeadingComments(el.leadingComments, ctx, depth + 1);
-
-    if (el.kind === 'object') {
-      emitPrettyObject(el, ctx, depth, true);
-    } else {
-      ctx.out += indentStr(ctx, depth + 1);
-      emitPrettyValue(el, ctx, depth + 1, false);
+    // Leading comments above the element — each on its own line at depth+1.
+    for (const c of el.leadingComments) {
+      ctx.out += indentStr(ctx, depth + 1) + prettyCommentLine(c) + '\n';
     }
+
+    // Element line at depth+1; emitPrettyValue emits inline (objects put `{`
+    // right after this indent push, arrays put `[`, scalars just emit).
+    ctx.out += indentStr(ctx, depth + 1);
+    emitPrettyValue(el, ctx, depth + 1);
 
     emitInlineTrailingComments(el.trailingComments, ctx);
   }
