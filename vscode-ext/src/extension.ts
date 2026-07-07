@@ -49,51 +49,24 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   // ---- Format providers ----
+  //
+  // Both document- and range-format go through `formatWholeDocument`. Earlier
+  // the range provider did `formatted.split('\n').slice(startLine, endLine+1)`
+  // — assuming formatted line N maps to original line N. It doesn't (formatting
+  // changes line counts), so pasting compact JHON truncated the output (only
+  // the first few formatted lines survived, leaving unclosed brackets that
+  // also looked like indent corruption). Whole-doc format is correct for both
+  // entry points; JHON files are typically small configs that don't benefit
+  // from sub-document formatting.
   context.subscriptions.push(
     vscode.languages.registerDocumentFormattingEditProvider('jhon', {
       provideDocumentFormattingEdits(doc) {
-        const cfg = vscode.workspace.getConfiguration('jhon.format');
-        if (!cfg.get<boolean>('enable', true)) return [];
-        try {
-          const ast = parseAst(doc.getText());
-          const out = serializeAstPretty(ast, readPrettyOptions());
-          const full = new vscode.Range(
-            doc.positionAt(0),
-            doc.positionAt(doc.getText().length)
-          );
-          return [vscode.TextEdit.replace(full, out)];
-        } catch {
-          // Diagnostics collection handles error reporting; format is a no-op
-          // when the document doesn't parse.
-          return [];
-        }
+        return formatWholeDocument(doc);
       },
     }),
     vscode.languages.registerDocumentRangeFormattingEditProvider('jhon', {
-      provideDocumentRangeFormattingEdits(doc, range) {
-        const cfg = vscode.workspace.getConfiguration('jhon.format');
-        if (!cfg.get<boolean>('enable', true)) return [];
-        try {
-          const ast = parseAst(doc.getText());
-          const formatted = serializeAstPretty(ast, readPrettyOptions());
-          const lines = formatted.split('\n');
-          const startLine = range.start.line;
-          const endLine = range.end.line;
-          const replaceRange = new vscode.Range(
-            startLine,
-            0,
-            endLine,
-            doc.lineAt(endLine).text.length
-          );
-          return [
-            vscode.TextEdit.replace(
-              replaceRange,
-              lines.slice(startLine, endLine + 1).join('\n')
-            ),
-          ];
-        } catch {
-          return [];
-        }
+      provideDocumentRangeFormattingEdits(doc, _range) {
+        return formatWholeDocument(doc);
       },
     })
   );
@@ -163,12 +136,39 @@ function readPrettyOptions(): SerializePrettyOptions {
   const cfg = vscode.workspace.getConfiguration('jhon.format');
   const insertSpaces = cfg.get<boolean>('insertSpaces', false);
   const tabSize = cfg.get<number>('tabSize', 2);
-  const maxInlineWidth = cfg.get<number>('maxInlineWidth', 0);
+  const maxInlineWidth = cfg.get<number>('maxInlineWidth', 44);
   return {
     indent: insertSpaces ? ' '.repeat(tabSize) : '\t',
     sortKeys: cfg.get<boolean>('sortKeys', false),
     maxInlineWidth,
   };
+}
+
+/**
+ * Parse + pretty-format the whole document, returning a single TextEdit that
+ * replaces the full document range with the formatted output. Returns `[]`
+ * when formatting is disabled or the document doesn't parse (diagnostics
+ * surface the parse error separately).
+ *
+ * Both the document- and range-format providers call this. Whole-document
+ * formatting is correct for both because pretty-printing changes line
+ * counts; a slice-based range replacement truncates the output (see comment
+ * on the provider registrations above).
+ */
+function formatWholeDocument(doc: vscode.TextDocument): vscode.TextEdit[] {
+  const cfg = vscode.workspace.getConfiguration('jhon.format');
+  if (!cfg.get<boolean>('enable', true)) return [];
+  try {
+    const ast = parseAst(doc.getText());
+    const out = serializeAstPretty(ast, readPrettyOptions());
+    const full = new vscode.Range(
+      doc.positionAt(0),
+      doc.positionAt(doc.getText().length)
+    );
+    return [vscode.TextEdit.replace(full, out)];
+  } catch {
+    return [];
+  }
 }
 
 function readCompactOptions(): SerializeOptions {

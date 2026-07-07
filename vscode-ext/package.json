@@ -92,7 +92,7 @@
         },
         "jhon.format.maxInlineWidth": {
           "type": "number",
-          "default": 0,
+          "default": 44,
           "minimum": 0,
           "maximum": 320,
           "description": "Maximum width (in characters) of an inline container before falling back to multi-line. 0 = disabled (always multi-line)."
