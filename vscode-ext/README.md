@@ -203,6 +203,86 @@ MIT. See [LICENSE](LICENSE) for the full text.
 
 Contributions are welcome — please open a Pull Request at [github.com/zjhken/jhon](https://github.com/zjhken/jhon).
 
+## Publishing
+
+This section is for maintainers releasing a new version to the VS Code Marketplace.
+Publishing is driven by the [`vsce`](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)
+CLI; the `vscode:prepublish` hook in `package.json` already compiles the extension before
+each release, so the steps below are only the account and CLI workflow.
+
+### Prerequisites
+
+- **Node.js** installed.
+- **`vsce`** — install globally with `npm install -g @vscode/vsce`, or run ad-hoc via
+  `npx @vscode/vsce` / `bunx vsce`.
+
+### One-time setup
+
+1. **Create a publisher** at <https://marketplace.visualstudio.com/manage> — the ID must be
+   `JinhuiZhang` to match `package.json`. Sign in with the Microsoft account that owns the
+   extension.
+2. **Generate a Personal Access Token (PAT)** from Azure DevOps
+   (<https://dev.azure.com> → User settings → *Personal access tokens* → *New Token*) with:
+   - **Organization**: *All accessible organizations*
+   - **Scopes**: *Custom defined* → show all scopes → **Marketplace → Manage**
+
+   Copy the token immediately — it is shown only once.
+3. **Log in locally**:
+
+   ```shell
+   vsce login JinhuiZhang
+   ```
+
+   Paste the PAT when prompted. The login is cached for future publishes.
+
+### Package for local testing
+
+```shell
+vsce package
+```
+
+Produces `JHON-lang-support-<version>.vsix` in the extension root. Install it from VS Code
+via the Extensions view → "..." → *Install from VSIX…*, or:
+
+```shell
+code --install-extension JHON-lang-support-<version>.vsix
+```
+
+### Publish
+
+```shell
+vsce publish                # publishes the version currently in package.json
+vsce publish patch          # bumps 2.1.1 → 2.1.2, commits, tags, and publishes
+vsce publish minor          # 2.1.1 → 2.2.0
+vsce publish major          # 2.1.1 → 3.0.0
+```
+
+The `vscode:prepublish` hook runs `bun run compile` automatically before packaging, so no
+manual build step is needed. The new version appears within a few minutes on the
+[publisher management page](https://marketplace.visualstudio.com/manage/publishers/JinhuiZhang)
+and at the extension's Marketplace URL.
+
+### Unpublish or remove a version
+
+Both actions live on the [publisher management page](https://marketplace.visualstudio.com/manage)
+under *More Actions*:
+
+- **Unpublish** — hides the extension from search/install but keeps stats; reversible.
+- **Remove** — irreversible; the extension id is permanently reserved and cannot be reused.
+- **Delete a specific version** — *More Actions → Reports → Manage → Delete this version*.
+  The latest version cannot be deleted, and a deleted version number cannot be republished.
+
+### Common pitfalls
+
+- **PAT rejected at login/publish** — the two usual causes are picking a specific
+  organization instead of *All accessible organizations*, or a scope other than
+  *Marketplace → Manage*.
+- **"The extension already exists in the Marketplace"** — both `name` and `displayName`
+  must be globally unique; bumping the version is not enough if either collides with
+  another extension.
+- **SVG assets rejected** — `icon.png` and any images referenced from this README must be
+  PNG (not SVG), and image URLs in the README must be HTTPS.
+
 ## Author
 
 **Jinhui ZHANG** — [GitHub](https://github.com/zjhken)

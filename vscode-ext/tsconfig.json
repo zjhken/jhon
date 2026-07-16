@@ -13,7 +13,10 @@
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
-		"resolveJsonModule": true
+		"resolveJsonModule": true,
+		"types": [
+			"bun"
+		]
 	},
 	"exclude": [
 		"node_modules",

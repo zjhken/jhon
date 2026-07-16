@@ -18,7 +18,6 @@
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "types": [
-      "node",
       "bun"
     ]
   },
