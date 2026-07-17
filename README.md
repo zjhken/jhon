@@ -20,7 +20,7 @@ The Rust impl at [`rust/`](./rust/) is the spec reference; the other four implem
 | Directory | Language | Package |
 |-----------|----------|---------|
 | [`rust/`](./rust/) | Rust 2024 | `jhon` on crates.io (v2.1.0) |
-| [`golang/`](./golang/) | Go 1.21 | `github.com/jhon-lang/jhon` |
+| [`golang/`](./golang/) | Go 1.21 | `github.com/zjhken/jhon/golang/v2` (v2.1.1) |
 | [`java/`](./java/) | Java 21 | `dev.jhon:jhon` (Maven) |
 | [`python/`](./python/) | Python 3.12 | `jhon` on PyPI |
 | [`typescript/`](./typescript/) | TypeScript 5 / ES2022 | `@zjhken/jhon` on npm (v2.1.0) |
